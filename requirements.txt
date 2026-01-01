@@ -1,0 +1,38 @@
+# Core Data & Trading
+pandas>=2.0.0
+numpy>=1.24.0
+ccxt>=4.0.0
+
+# Sentiment Analysis
+tweepy>=4.14.0
+textblob>=0.17.0
+vaderSentiment>=3.3.2
+transformers>=4.30.0  # For FinBERT
+torch>=2.0.0  # For FinBERT (CPU version is fine)
+
+# Technical Analysis
+ta-lib>=0.4.0
+
+# Machine Learning
+scikit-learn>=1.3.0
+joblib>=1.3.0  # For model saving/loading
+
+# Dashboard & Visualization
+streamlit>=1.28.0
+plotly>=5.17.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Database & Config
+sqlalchemy>=2.0.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Automation
+schedule>=1.2.0
+
+# Additional utilities
+requests>=2.31.0
+nltk>=3.8.0  # For text preprocessing
+praw>=7.7.0  # Reddit API
+feedparser>=6.0.10  # RSS feed parsing
