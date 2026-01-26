@@ -103,54 +103,109 @@ class TradingStrategy:
 
     def _generate_signal_from_df(self, symbol: str, df: pd.DataFrame) -> Optional[Dict]:
         """
-        Generate signal from single dataframe (for backtesting)
-        Uses simplified logic on 15m timeframe
+        Generate signal from single dataframe using CONFLUENCE SCORING
+        Used for backtesting - analyzes 15M data with all available indicators
         """
         if len(df) < 200:
             return None
 
-        # Add indicators
+        # Add all indicators
         df_analyzed = self.ta_indicators.add_all_indicators(df)
         df_smc = self.smc_detector.analyze_smc(df_analyzed)
         latest = df_smc.iloc[-1]
 
-        # Get trend from EMA
+        # Get EMA trend
         ema_trend = self.ta_indicators.get_trend_signal(df_analyzed).iloc[-1]
 
-        # LONG signal: Bullish trend + bullish SMC pattern
-        if (ema_trend == 1 and
-            (latest.get('choch_bullish') or latest.get('bos_bullish')) and
-                latest.get('fvg_bullish')):
+        # === CONFLUENCE SCORING FOR BACKTEST ===
+        confluence_score = 0.0
+        reasons = []
 
-            atr = latest.get('atr', 0)
-            entry_price = latest['close']
+        # EMA Trend (25% weight - since no multi-TF in backtest, this is key)
+        if ema_trend == 1:
+            confluence_score += 0.25
+            reasons.append('EMA:bull')
+        elif ema_trend == -1:
+            confluence_score -= 0.25
+            reasons.append('EMA:bear')
 
+        # RSI (15% weight)
+        rsi = latest.get('rsi', 50)
+        if rsi < 35:  # Oversold
+            confluence_score += 0.15
+            reasons.append('RSI:oversold')
+        elif rsi > 65:  # Overbought
+            confluence_score -= 0.15
+            reasons.append('RSI:overbought')
+
+        # CHOCH (25% weight - strongest SMC signal)
+        if latest.get('choch_bullish'):
+            confluence_score += 0.25
+            reasons.append('CHOCH:bull')
+        elif latest.get('choch_bearish'):
+            confluence_score -= 0.25
+            reasons.append('CHOCH:bear')
+
+        # BOS (15% weight)
+        if latest.get('bos_bullish'):
+            confluence_score += 0.15
+            reasons.append('BOS:bull')
+        elif latest.get('bos_bearish'):
+            confluence_score -= 0.15
+            reasons.append('BOS:bear')
+
+        # FVG (10% weight)
+        if latest.get('fvg_bullish'):
+            confluence_score += 0.10
+            reasons.append('FVG:bull')
+        elif latest.get('fvg_bearish'):
+            confluence_score -= 0.10
+            reasons.append('FVG:bear')
+
+        # Market structure (10% weight)
+        structure = latest.get('market_structure', 'neutral')
+        if structure == 'bullish':
+            confluence_score += 0.10
+            reasons.append('Structure:bull')
+        elif structure == 'bearish':
+            confluence_score -= 0.10
+            reasons.append('Structure:bear')
+
+        # === SIGNAL GENERATION ===
+        confluence_threshold = self.config.get(
+            'strategy', {}).get('confluence_threshold', 0.35)
+
+        atr = latest.get('atr', 0)
+        entry_price = latest['close']
+
+        if confluence_score >= confluence_threshold:
+            # LONG signal
             return {
                 'action': 'buy',
                 'symbol': symbol,
+                'direction': 'long',
                 'entry_price': entry_price,
-                'stop_loss': entry_price - (atr * 1.5),
-                'take_profit': entry_price + (atr * 3),
+                'stop_loss': entry_price - (atr * self.config['risk']['stop_loss_atr_multiplier']),
+                'take_profit': entry_price + (atr * self.config['risk']['stop_loss_atr_multiplier'] * self.config['risk']['take_profit_rr_ratio']),
                 'position_size_usd': self.config.get('trading', {}).get('position_size_usd', 100),
-                'reason': 'Bullish SMC + EMA trend'
+                'reason': f'Confluence LONG ({confluence_score:.0%}): {" ".join(reasons)}',
+                'confluence_score': confluence_score,
+                'timestamp': df.index[-1] if hasattr(df.index, '__iter__') else None
             }
 
-        # SHORT signal: Bearish trend + bearish SMC pattern
-        elif (ema_trend == -1 and
-              (latest.get('choch_bearish') or latest.get('bos_bearish')) and
-              latest.get('fvg_bearish')):
-
-            atr = latest.get('atr', 0)
-            entry_price = latest['close']
-
+        elif confluence_score <= -confluence_threshold:
+            # SHORT signal
             return {
                 'action': 'sell',
                 'symbol': symbol,
+                'direction': 'short',
                 'entry_price': entry_price,
-                'stop_loss': entry_price + (atr * 1.5),
-                'take_profit': entry_price - (atr * 3),
+                'stop_loss': entry_price + (atr * self.config['risk']['stop_loss_atr_multiplier']),
+                'take_profit': entry_price - (atr * self.config['risk']['stop_loss_atr_multiplier'] * self.config['risk']['take_profit_rr_ratio']),
                 'position_size_usd': self.config.get('trading', {}).get('position_size_usd', 100),
-                'reason': 'Bearish SMC + EMA trend'
+                'reason': f'Confluence SHORT ({abs(confluence_score):.0%}): {" ".join(reasons)}',
+                'confluence_score': confluence_score,
+                'timestamp': df.index[-1] if hasattr(df.index, '__iter__') else None
             }
 
         return None
@@ -162,7 +217,13 @@ class TradingStrategy:
         df: pd.DataFrame = None
     ) -> Optional[Dict]:
         """
-        Generate trading signal based on all filters
+        Generate trading signal using CONFLUENCE SCORING SYSTEM
+
+        Instead of requiring perfect alignment (which rarely happens),
+        we use a weighted scoring approach:
+        - Each factor contributes points toward bullish/bearish
+        - Trade when total score exceeds threshold
+        - Higher confluence = higher confidence
 
         Args:
             symbol: Trading symbol
@@ -184,50 +245,99 @@ class TradingStrategy:
         ema_trend = mtf_analysis['ema_trend_15m']
         latest_15m = mtf_analysis['latest_15m']
 
-        # Determine signal direction
+        # === CONFLUENCE SCORING SYSTEM ===
+        # Each factor adds/subtracts from score
+        # Positive = bullish, Negative = bearish
+
+        confluence_score = 0.0
+        reasons = []
+
+        # 1D Bias (25% weight) - Higher timeframe = more weight
+        if bias_1d == 'bullish':
+            confluence_score += 0.25
+            reasons.append('1D:bull')
+        elif bias_1d == 'bearish':
+            confluence_score -= 0.25
+            reasons.append('1D:bear')
+
+        # 4H Structure (20% weight)
+        if structure_4h == 'bullish':
+            confluence_score += 0.20
+            reasons.append('4H:bull')
+        elif structure_4h == 'bearish':
+            confluence_score -= 0.20
+            reasons.append('4H:bear')
+
+        # 15M EMA Trend (15% weight)
+        if ema_trend == 'bullish':
+            confluence_score += 0.15
+            reasons.append('EMA:bull')
+        elif ema_trend == 'bearish':
+            confluence_score -= 0.15
+            reasons.append('EMA:bear')
+
+        # SMC Patterns on 15M (40% weight combined - these are key entry triggers)
+        # CHOCH (20% - strongest reversal signal)
+        if latest_15m.get('choch_bullish'):
+            confluence_score += 0.20
+            reasons.append('CHOCH:bull')
+        elif latest_15m.get('choch_bearish'):
+            confluence_score -= 0.20
+            reasons.append('CHOCH:bear')
+
+        # BOS (12% - trend continuation)
+        if latest_15m.get('bos_bullish'):
+            confluence_score += 0.12
+            reasons.append('BOS:bull')
+        elif latest_15m.get('bos_bearish'):
+            confluence_score -= 0.12
+            reasons.append('BOS:bear')
+
+        # FVG (8% - entry zone)
+        if latest_15m.get('fvg_bullish'):
+            confluence_score += 0.08
+            reasons.append('FVG:bull')
+        elif latest_15m.get('fvg_bearish'):
+            confluence_score -= 0.08
+            reasons.append('FVG:bear')
+
+        # === SIGNAL GENERATION ===
+        # Threshold: 0.35 = need at least 35% confluence
+        # This allows partial alignment while still being selective
+        confluence_threshold = self.config.get(
+            'strategy', {}).get('confluence_threshold', 0.35)
+
         signal = None
 
-        # LONG Signal Conditions:
-        # 1. 1D bias is bullish
-        # 2. 4H structure is bullish
-        # 3. 15M EMA trend is bullish (price > EMA50 > EMA200)
-        # 4. 15M shows bullish CHOCH/BOS + FVG
-        if (bias_1d == 'bullish' and
-            structure_4h == 'bullish' and
-            ema_trend == 'bullish' and
-            (latest_15m.get('choch_bullish') or latest_15m.get('bos_bullish')) and
-                latest_15m.get('fvg_bullish')):
-
+        if confluence_score >= confluence_threshold:
+            # LONG signal
             signal = {
                 'symbol': symbol,
                 'direction': 'long',
                 'entry_price': latest_15m['close'],
                 'timestamp': datetime.now(),
-                'reason': 'Multi-TF bullish alignment with SMC and EMA filter'
+                'reason': f'Confluence LONG ({confluence_score:.0%}): {" ".join(reasons)}',
+                'confluence_score': confluence_score
             }
+            logger.info(
+                f"[CONFLUENCE] LONG signal: {confluence_score:.2f} >= {confluence_threshold} [{' '.join(reasons)}]")
 
-        # SHORT Signal Conditions:
-        # 1. 1D bias is bearish
-        # 2. 4H structure is bearish
-        # 3. 15M EMA trend is bearish (price < EMA50 < EMA200)
-        # 4. 15M shows bearish CHOCH/BOS + FVG
-        elif (bias_1d == 'bearish' and
-              structure_4h == 'bearish' and
-              ema_trend == 'bearish' and
-              (latest_15m.get('choch_bearish') or latest_15m.get('bos_bearish')) and
-              latest_15m.get('fvg_bearish')):
-
+        elif confluence_score <= -confluence_threshold:
+            # SHORT signal
             signal = {
                 'symbol': symbol,
                 'direction': 'short',
                 'entry_price': latest_15m['close'],
                 'timestamp': datetime.now(),
-                'reason': 'Multi-TF bearish alignment with SMC and EMA filter'
+                'reason': f'Confluence SHORT ({abs(confluence_score):.0%}): {" ".join(reasons)}',
+                'confluence_score': confluence_score
             }
+            logger.info(
+                f"[CONFLUENCE] SHORT signal: {confluence_score:.2f} <= -{confluence_threshold} [{' '.join(reasons)}]")
 
         if not signal:
-            logger.info(
-                f"No signal generated for {symbol} - conditions not met")
+            logger.debug(
+                f"No signal: confluence {confluence_score:.2f} below threshold ±{confluence_threshold}")
             return None
 
         # Apply sentiment filter
