@@ -3,8 +3,6 @@ Streamlit Dashboard for Trading Bot
 Real-time visualization of signals, performance, and system metrics
 """
 
-from src.utils.helpers import load_config
-from src.utils.db_manager import DatabaseManager
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -16,6 +14,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Now import from src
+from src.utils.helpers import load_config
+from src.utils.db_manager import DatabaseManager
 
 # Page configuration
 st.set_page_config(
