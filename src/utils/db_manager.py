@@ -3,13 +3,12 @@ Database manager for storing trades, logs, and analytics
 Supports SQLite and PostgreSQL
 """
 
-import sqlite3
 import pandas as pd
 from datetime import datetime
 from typing import Dict, List, Optional
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text, inspect as sa_inspect
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, scoped_session
 from src.utils.logger import get_logger
 
 Base = declarative_base()
@@ -36,6 +35,8 @@ class Trade(Base):
     strategy = Column(String(50))
     timeframe = Column(String(10))
     notes = Column(Text, nullable=True)
+    partial_tp_taken = Column(Boolean, default=False)  # True after 30% closed at 1:1 R:R
+    partial_pnl = Column(Float, default=0.0)  # Accumulated PnL from partial closes
 
     @property
     def direction(self):
@@ -49,7 +50,7 @@ class Signal(Base):
 
     id = Column(Integer, primary_key=True)
     symbol = Column(String(20))
-    signal_type = Column(String(20))  # smc, sentiment, event
+    signal_type = Column(String(20))  # smc, sentiment, ml
     direction = Column(String(10))  # long, short, neutral
     strength = Column(Float)
     timestamp = Column(DateTime)
@@ -84,8 +85,11 @@ class DatabaseManager:
         # Create tables
         Base.metadata.create_all(self.engine)
 
-        Session = sessionmaker(bind=self.engine)
-        self.session = Session()
+        # Run lightweight migrations (add new columns to existing tables)
+        self._run_migrations()
+
+        session_factory = sessionmaker(bind=self.engine)
+        self.Session = scoped_session(session_factory)
 
         logger.info("Database initialized successfully")
 
@@ -109,8 +113,51 @@ class DatabaseManager:
             raise ValueError(
                 f"Unsupported database type: {self.db_config['type']}")
 
+    def _run_migrations(self):
+        """
+        Lightweight schema migration: adds any new columns defined on models
+        but missing from the actual database tables.
+        This avoids needing Alembic for simple column additions.
+        """
+        from sqlalchemy import text
+        inspector = sa_inspect(self.engine)
+
+        for table_name, model_class in [('trades', Trade), ('signals', Signal), ('performance_metrics', PerformanceMetric)]:
+            if not inspector.has_table(table_name):
+                continue
+
+            existing_columns = {col['name'] for col in inspector.get_columns(table_name)}
+            model_columns = {col.name: col for col in model_class.__table__.columns}
+
+            for col_name, col_obj in model_columns.items():
+                if col_name not in existing_columns:
+                    # Build ALTER TABLE statement
+                    col_type = col_obj.type.compile(dialect=self.engine.dialect)
+                    default_clause = ""
+                    if col_obj.default is not None:
+                        default_val = col_obj.default.arg
+                        if isinstance(default_val, bool):
+                            default_clause = f" DEFAULT {1 if default_val else 0}"
+                        elif isinstance(default_val, (int, float)):
+                            default_clause = f" DEFAULT {default_val}"
+                        else:
+                            default_clause = f" DEFAULT '{default_val}'"
+                    elif col_obj.nullable:
+                        default_clause = " DEFAULT NULL"
+
+                    sql = f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}{default_clause}"
+                    try:
+                        with self.engine.begin() as conn:
+                            conn.execute(text(sql))
+                        logger.info(f"Migration: added column '{col_name}' to '{table_name}'")
+                    except Exception as e:
+                        # Column might already exist or other benign issue
+                        if 'duplicate' not in str(e).lower():
+                            logger.debug(f"Migration note for {table_name}.{col_name}: {e}")
+
     def save_trade(self, trade_data: Dict) -> int:
         """Save a new trade to database"""
+        session = self.Session()
         trade = Trade(
             symbol=trade_data['symbol'],
             side=trade_data['side'],
@@ -125,8 +172,8 @@ class DatabaseManager:
             notes=trade_data.get('notes', '')
         )
 
-        self.session.add(trade)
-        self.session.commit()
+        session.add(trade)
+        session.commit()
 
         logger.info(
             f"Saved trade: {trade_data['symbol']} {trade_data['side']}")
@@ -134,51 +181,78 @@ class DatabaseManager:
 
     def update_trade(self, trade_id: int, update_data: Dict):
         """Update existing trade"""
-        trade = self.session.query(Trade).filter_by(id=trade_id).first()
+        session = self.Session()
+        trade = session.query(Trade).filter_by(id=trade_id).first()
 
         if trade:
             for key, value in update_data.items():
                 setattr(trade, key, value)
 
-            self.session.commit()
+            session.commit()
             logger.info(f"Updated trade {trade_id}")
         else:
             logger.warning(f"Trade {trade_id} not found")
 
     def close_trade(self, trade_id: int, exit_price: float, exit_time: datetime = None):
-        """Close a trade and calculate PnL"""
-        trade = self.session.query(Trade).filter_by(id=trade_id).first()
+        """Close a trade and calculate PnL (leverage-aware for futures, includes commission)"""
+        session = self.Session()
+        trade = session.query(Trade).filter_by(id=trade_id).first()
 
         if trade:
             trade.exit_price = exit_price
             trade.exit_time = exit_time or datetime.now()
             trade.status = 'closed'
 
-            # Calculate PnL
+            # Check market type, leverage, and commission from config
+            config = self.config
+            market_type = config.get('trading', {}).get('market_type', 'spot')
+            leverage = config.get('trading', {}).get('leverage', 1)
+            commission_rate = config.get('backtest', {}).get('commission', 0.001)  # 0.1% per side
+
+            # trade.quantity = USD margin amount (e.g. $100)
+            # For futures: actual position size in base = quantity * leverage / entry_price
+            # PnL = price_diff * position_size_base (actual USD gained/lost)
+            # For spot: position size in base = quantity / entry_price, no leverage
+            effective_leverage = leverage if market_type == 'futures' else 1
+            position_size_base = (trade.quantity * effective_leverage) / trade.entry_price
+
             if trade.side == 'buy':
-                trade.pnl = (exit_price - trade.entry_price) * trade.quantity
+                raw_pnl = (exit_price - trade.entry_price) * position_size_base
             else:  # sell/short
-                trade.pnl = (trade.entry_price - exit_price) * trade.quantity
+                raw_pnl = (trade.entry_price - exit_price) * position_size_base
 
-            trade.pnl_percentage = (
-                trade.pnl / (trade.entry_price * trade.quantity)) * 100
+            # Deduct trading commission (entry + exit)
+            entry_commission = trade.entry_price * position_size_base * commission_rate
+            exit_commission = exit_price * position_size_base * commission_rate
+            trade.pnl = raw_pnl - entry_commission - exit_commission + (trade.partial_pnl or 0.0)
 
-            self.session.commit()
-            logger.info(f"Closed trade {trade_id} with PnL: {trade.pnl:.2f}")
+            # PnL % relative to the original margin (including any partial-closed portion)
+            original_qty = trade.quantity  # current remaining margin
+            if trade.partial_tp_taken:
+                # Reconstruct original margin: remaining is (1 - close_fraction) of original
+                close_fraction = self.config.get('risk', {}).get('partial_tp', {}).get('close_fraction', 0.30)
+                original_qty = trade.quantity / (1 - close_fraction)
+            trade.pnl_percentage = (trade.pnl / original_qty) * 100
+
+            session.commit()
+            logger.info(f"Closed trade {trade_id} with PnL: ${trade.pnl:.2f} ({trade.pnl_percentage:.2f}%)")
         else:
             logger.warning(f"Trade {trade_id} not found")
 
     def get_open_trades(self) -> List[Trade]:
         """Get all open trades"""
-        return self.session.query(Trade).filter_by(status='open').all()
+        session = self.Session()
+        return session.query(Trade).filter_by(status='open').all()
 
     def get_trade(self, trade_id: int) -> Optional[Trade]:
         """Get a specific trade by ID"""
-        return self.session.query(Trade).filter_by(id=trade_id).first()
+        session = self.Session()
+        return session.query(Trade).filter_by(id=trade_id).first()
 
     def get_trade_history(self, symbol: str = None, limit: int = 100) -> pd.DataFrame:
         """Get trade history as DataFrame"""
-        query = self.session.query(Trade)
+        session = self.Session()
+        query = session.query(Trade)
 
         if symbol:
             query = query.filter_by(symbol=symbol)
@@ -203,6 +277,7 @@ class DatabaseManager:
 
     def save_signal(self, signal_data: Dict):
         """Save a trading signal"""
+        session = self.Session()
         signal = Signal(
             symbol=signal_data['symbol'],
             signal_type=signal_data['signal_type'],
@@ -213,11 +288,12 @@ class DatabaseManager:
             executed=signal_data.get('executed', False)
         )
 
-        self.session.add(signal)
-        self.session.commit()
+        session.add(signal)
+        session.commit()
 
     def save_performance_metrics(self, metrics: Dict):
         """Save daily performance metrics"""
+        session = self.Session()
         perf = PerformanceMetric(
             date=metrics.get('date', datetime.now()),
             total_trades=metrics['total_trades'],
@@ -230,10 +306,10 @@ class DatabaseManager:
             portfolio_value=metrics['portfolio_value']
         )
 
-        self.session.add(perf)
-        self.session.commit()
+        session.add(perf)
+        session.commit()
 
     def close(self):
         """Close database connection"""
-        self.session.close()
+        self.Session.remove()
         logger.info("Database connection closed")

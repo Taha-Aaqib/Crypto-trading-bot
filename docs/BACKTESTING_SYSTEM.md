@@ -104,7 +104,6 @@ visualizer.plot_performance_dashboard(metrics, results)
 The following features were removed to keep only core backtesting:
 
 - Order Block detection in SMC
-- Economic calendar auto-fetch
 - Enhanced dashboard live signals
 - Test scripts and comprehensive runner
 

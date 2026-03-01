@@ -1,0 +1,16 @@
+{
+  "total_trades": 29,
+  "winning_trades": 11,
+  "losing_trades": 18,
+  "win_rate": 37.93103448275862,
+  "total_pnl": 130842.85714285434,
+  "total_return_pct": 13084.285714285434,
+  "avg_win": 81333.1168831166,
+  "avg_loss": 42434.52380952379,
+  "profit_factor": 1.1713003226258907,
+  "max_drawdown_pct": 4182.312925171578,
+  "sharpe_ratio": 2.4422805919976613,
+  "avg_risk_reward": 1.916673255206003,
+  "best_trade": 120769.2857142858,
+  "worst_trade": -70007.14285714275
+}

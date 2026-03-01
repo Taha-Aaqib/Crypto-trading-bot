@@ -36,10 +36,17 @@ class DataFetcher:
         api_key = self.exchange_config.get('api_key', '')
         api_secret = self.exchange_config.get('api_secret', '')
 
+        # Determine market type from config (futures or spot)
+        market_type = self.config.get('trading', {}).get('market_type', 'spot')
+        default_type = 'future' if market_type == 'futures' else 'spot'
+        # Override to futures if testnet is enabled (testnet uses futures endpoint)
+        if self.exchange_config.get('testnet'):
+            default_type = 'future'
+
         exchange_options = {
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'future' if self.exchange_config.get('testnet') else 'spot'
+                'defaultType': default_type
             }
         }
 
@@ -155,10 +162,10 @@ class DataFetcher:
             all_data.append(df)
 
             # Move cursor to AFTER the last fetched candle
-            # Skip forward by the number of candles we got
+            # Skip forward by one candle of the current timeframe
             last_timestamp = df.index[-1].to_pydatetime()
             next_timestamp = last_timestamp + \
-                timedelta(hours=1)  # Start after last candle
+                timedelta(minutes=tf_minutes)  # Start after last candle
 
             # If we got less than 100 candles, we're probably at the end
             if len(df) < 100:

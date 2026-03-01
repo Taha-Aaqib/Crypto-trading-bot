@@ -74,8 +74,11 @@ class SMCDetector:
 
     def detect_market_structure(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Determine market structure: bullish or bearish
-        Based on higher highs/higher lows or lower highs/lower lows
+        Determine market structure PER CANDLE (rolling).
+        At each swing point, re-evaluate based on the last 2 swing highs
+        and last 2 swing lows up to that point, then forward-fill.
+        This allows BOS to detect both bullish and bearish breaks as
+        market structure changes over time.
         """
         df_structure = df.copy()
 
@@ -86,26 +89,57 @@ class SMCDetector:
         swing_highs = df_structure['swing_high'].dropna()
         swing_lows = df_structure['swing_low'].dropna()
 
-        # Determine trend
+        # Initialize all as neutral
         df_structure['market_structure'] = 'neutral'
 
-        if len(swing_highs) >= 2 and len(swing_lows) >= 2:
-            # Check for higher highs and higher lows (bullish)
-            recent_highs = swing_highs.iloc[-2:]
-            recent_lows = swing_lows.iloc[-2:]
+        if len(swing_highs) < 2 or len(swing_lows) < 2:
+            return df_structure
 
-            if recent_highs.iloc[1] > recent_highs.iloc[0] and recent_lows.iloc[1] > recent_lows.iloc[0]:
-                df_structure['market_structure'] = 'bullish'
-            # Check for lower highs and lower lows (bearish)
-            elif recent_highs.iloc[1] < recent_highs.iloc[0] and recent_lows.iloc[1] < recent_lows.iloc[0]:
-                df_structure['market_structure'] = 'bearish'
+        # Build list of swing events sorted by index
+        high_events = [(idx, 'high', val) for idx, val in zip(swing_highs.index, swing_highs.values)]
+        low_events = [(idx, 'low', val) for idx, val in zip(swing_lows.index, swing_lows.values)]
+        events = sorted(high_events + low_events, key=lambda x: x[0])
+
+        # Track last 2 highs and lows as we go
+        last_highs = []
+        last_lows = []
+        structure_at_idx = {}
+
+        for idx, kind, val in events:
+            if kind == 'high':
+                last_highs.append(val)
+                if len(last_highs) > 2:
+                    last_highs = last_highs[-2:]
+            else:
+                last_lows.append(val)
+                if len(last_lows) > 2:
+                    last_lows = last_lows[-2:]
+
+            if len(last_highs) >= 2 and len(last_lows) >= 2:
+                hh = last_highs[-1] > last_highs[-2]  # Higher high
+                hl = last_lows[-1] > last_lows[-2]    # Higher low
+
+                if hh and hl:
+                    structure_at_idx[idx] = 'bullish'
+                elif not hh and not hl:
+                    structure_at_idx[idx] = 'bearish'
+                else:
+                    structure_at_idx[idx] = 'neutral'
+
+        # Apply via reindex + forward-fill (efficient, no per-row loop)
+        if structure_at_idx:
+            structure_series = pd.Series(structure_at_idx)
+            structure_series = structure_series.reindex(df_structure.index, method='ffill')
+            structure_series = structure_series.fillna('neutral')
+            df_structure['market_structure'] = structure_series
 
         return df_structure
 
     def detect_choch(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Detect Change of Character (CHOCH)
-        CHOCH occurs when price breaks the most recent swing point against the trend
+        CHOCH occurs ONLY at the candle that FIRST breaks the most recent swing point
+        This is a one-time event, not every candle above/below the level
         """
         df_choch = df.copy()
         df_choch = self.detect_swing_points(df_choch)
@@ -116,24 +150,35 @@ class SMCDetector:
         swing_highs = df_choch['swing_high'].dropna()
         swing_lows = df_choch['swing_low'].dropna()
 
+        # Track if we've already broken each swing level
+        last_broken_high = None
+        last_broken_low = None
+
         for i in range(len(df_choch)):
-            current_price = df_choch.iloc[i]['close']
+            current_high = df_choch.iloc[i]['high']
+            current_low = df_choch.iloc[i]['low']
 
-            # Bullish CHOCH: Price breaks above recent swing high in downtrend
-            if len(swing_highs) > 0:
-                recent_high = swing_highs.iloc[-1]
-                if current_price > recent_high:
-                    df_choch.iloc[i, df_choch.columns.get_loc(
-                        'choch_bullish')] = True
+            # Get swing points BEFORE this candle only
+            prior_swing_highs = swing_highs[swing_highs.index < df_choch.index[i]]
+            prior_swing_lows = swing_lows[swing_lows.index < df_choch.index[i]]
 
-            # Bearish CHOCH: Price breaks below recent swing low in uptrend
-            if len(swing_lows) > 0:
-                recent_low = swing_lows.iloc[-1]
-                if current_price < recent_low:
-                    df_choch.iloc[i, df_choch.columns.get_loc(
-                        'choch_bearish')] = True
+            # Bullish CHOCH: FIRST break above recent swing high
+            if len(prior_swing_highs) > 0:
+                recent_high = prior_swing_highs.iloc[-1]
+                # Only mark if this is the FIRST break (not already broken)
+                if current_high > recent_high and last_broken_high != recent_high:
+                    df_choch.iloc[i, df_choch.columns.get_loc('choch_bullish')] = True
+                    last_broken_high = recent_high
 
-        logger.info(
+            # Bearish CHOCH: FIRST break below recent swing low
+            if len(prior_swing_lows) > 0:
+                recent_low = prior_swing_lows.iloc[-1]
+                # Only mark if this is the FIRST break (not already broken)
+                if current_low < recent_low and last_broken_low != recent_low:
+                    df_choch.iloc[i, df_choch.columns.get_loc('choch_bearish')] = True
+                    last_broken_low = recent_low
+
+        logger.debug(
             f"Detected {df_choch['choch_bullish'].sum()} bullish and {df_choch['choch_bearish'].sum()} bearish CHOCH")
 
         return df_choch
@@ -141,7 +186,7 @@ class SMCDetector:
     def detect_bos(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Detect Break of Structure (BOS)
-        BOS confirms trend continuation after breaking a swing point in trend direction
+        BOS confirms trend continuation - ONLY marks the FIRST candle that breaks
         """
         df_bos = df.copy()
         df_bos = self.detect_swing_points(df_bos)
@@ -150,36 +195,52 @@ class SMCDetector:
         df_bos['bos_bullish'] = False
         df_bos['bos_bearish'] = False
 
+        # Track broken levels to avoid marking multiple times
+        last_broken_high = None
+        last_broken_low = None
+
         for i in range(1, len(df_bos)):
-            current_price = df_bos.iloc[i]['close']
+            current_high = df_bos.iloc[i]['high']
+            current_low = df_bos.iloc[i]['low']
             market_structure = df_bos.iloc[i]['market_structure']
 
-            # Bullish BOS: In uptrend, break above recent swing high
-            if market_structure == 'bullish':
-                recent_swing_high = df_bos.iloc[:i]['swing_high'].dropna()
-                if len(recent_swing_high) > 0 and current_price > recent_swing_high.iloc[-1]:
-                    df_bos.iloc[i, df_bos.columns.get_loc(
-                        'bos_bullish')] = True
+            # Get swing points BEFORE this candle
+            prior_swing_highs = df_bos.iloc[:i]['swing_high'].dropna()
+            prior_swing_lows = df_bos.iloc[:i]['swing_low'].dropna()
 
-            # Bearish BOS: In downtrend, break below recent swing low
-            elif market_structure == 'bearish':
-                recent_swing_low = df_bos.iloc[:i]['swing_low'].dropna()
-                if len(recent_swing_low) > 0 and current_price < recent_swing_low.iloc[-1]:
-                    df_bos.iloc[i, df_bos.columns.get_loc(
-                        'bos_bearish')] = True
+            # Bullish BOS: In uptrend, FIRST break above recent swing high
+            if market_structure == 'bullish' and len(prior_swing_highs) > 0:
+                recent_high = prior_swing_highs.iloc[-1]
+                if current_high > recent_high and last_broken_high != recent_high:
+                    df_bos.iloc[i, df_bos.columns.get_loc('bos_bullish')] = True
+                    last_broken_high = recent_high
 
-        logger.info(
+            # Bearish BOS: In downtrend, FIRST break below recent swing low
+            elif market_structure == 'bearish' and len(prior_swing_lows) > 0:
+                recent_low = prior_swing_lows.iloc[-1]
+                if current_low < recent_low and last_broken_low != recent_low:
+                    df_bos.iloc[i, df_bos.columns.get_loc('bos_bearish')] = True
+                    last_broken_low = recent_low
+
+        logger.debug(
             f"Detected {df_bos['bos_bullish'].sum()} bullish and {df_bos['bos_bearish'].sum()} bearish BOS")
 
         return df_bos
 
     def detect_fvg(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Detect Fair Value Gaps (FVG)
+        Detect SIGNIFICANT Fair Value Gaps (FVG)
+        Only mark FVG if it's significant (larger gap) and near CHOCH/BOS
         FVG is a gap in price where candle[i-1].low > candle[i+1].high (bullish)
         or candle[i-1].high < candle[i+1].low (bearish)
         """
         df_fvg = df.copy()
+
+        # Need CHOCH/BOS columns first
+        if 'choch_bullish' not in df_fvg.columns:
+            df_fvg = self.detect_choch(df_fvg)
+        if 'bos_bullish' not in df_fvg.columns:
+            df_fvg = self.detect_bos(df_fvg)
 
         # Initialize columns with proper data types
         df_fvg.loc[:, 'fvg_bullish'] = False
@@ -187,36 +248,51 @@ class SMCDetector:
         df_fvg.loc[:, 'fvg_high'] = np.nan
         df_fvg.loc[:, 'fvg_low'] = np.nan
 
+        # Use higher threshold for significant FVGs (0.3% instead of 0.1%)
+        significant_fvg_threshold = self.fvg_threshold * 3  # 0.3%
+        
+        # Look for CHOCH/BOS within last 10 candles to validate FVG
+        lookback_for_structure = 10
+
         for i in range(1, len(df_fvg) - 1):
             prev_candle = df_fvg.iloc[i - 1]
             curr_candle = df_fvg.iloc[i]
             next_candle = df_fvg.iloc[i + 1]
 
+            # Check if there's a recent CHOCH or BOS nearby (within lookback)
+            start_idx = max(0, i - lookback_for_structure)
+            end_idx = min(len(df_fvg), i + lookback_for_structure)
+            
+            has_nearby_bullish_structure = (
+                df_fvg.iloc[start_idx:end_idx]['choch_bullish'].any() or
+                df_fvg.iloc[start_idx:end_idx]['bos_bullish'].any()
+            )
+            has_nearby_bearish_structure = (
+                df_fvg.iloc[start_idx:end_idx]['choch_bearish'].any() or
+                df_fvg.iloc[start_idx:end_idx]['bos_bearish'].any()
+            )
+
             # Bullish FVG: Gap up (prev.high < next.low)
             if prev_candle['high'] < next_candle['low']:
-                gap_size = (next_candle['low'] -
-                            prev_candle['high']) / prev_candle['high']
+                gap_size = (next_candle['low'] - prev_candle['high']) / prev_candle['high']
 
-                if gap_size >= self.fvg_threshold:
+                # Only mark if significant AND near bullish structure
+                if gap_size >= significant_fvg_threshold and has_nearby_bullish_structure:
                     df_fvg.loc[df_fvg.index[i], 'fvg_bullish'] = True
-                    df_fvg.loc[df_fvg.index[i],
-                               'fvg_low'] = prev_candle['high']
-                    df_fvg.loc[df_fvg.index[i],
-                               'fvg_high'] = next_candle['low']
+                    df_fvg.loc[df_fvg.index[i], 'fvg_low'] = prev_candle['high']
+                    df_fvg.loc[df_fvg.index[i], 'fvg_high'] = next_candle['low']
 
             # Bearish FVG: Gap down (prev.low > next.high)
             elif prev_candle['low'] > next_candle['high']:
-                gap_size = (prev_candle['low'] -
-                            next_candle['high']) / prev_candle['low']
+                gap_size = (prev_candle['low'] - next_candle['high']) / prev_candle['low']
 
-                if gap_size >= self.fvg_threshold:
+                # Only mark if significant AND near bearish structure
+                if gap_size >= significant_fvg_threshold and has_nearby_bearish_structure:
                     df_fvg.loc[df_fvg.index[i], 'fvg_bearish'] = True
-                    df_fvg.loc[df_fvg.index[i],
-                               'fvg_high'] = prev_candle['low']
-                    df_fvg.loc[df_fvg.index[i],
-                               'fvg_low'] = next_candle['high']
+                    df_fvg.loc[df_fvg.index[i], 'fvg_high'] = prev_candle['low']
+                    df_fvg.loc[df_fvg.index[i], 'fvg_low'] = next_candle['high']
 
-        logger.info(
+        logger.debug(
             f"Detected {df_fvg['fvg_bullish'].sum()} bullish and {df_fvg['fvg_bearish'].sum()} bearish FVG")
 
         return df_fvg
@@ -238,7 +314,7 @@ class SMCDetector:
         df_liq.loc[df_liq['liquidity_high'].notna(
         ) | df_liq['liquidity_low'].notna(), 'liquidity_zone'] = True
 
-        logger.info(
+        logger.debug(
             f"Detected {df_liq['liquidity_zone'].sum()} liquidity zones")
 
         return df_liq
@@ -250,7 +326,7 @@ class SMCDetector:
         Returns:
             DataFrame with all SMC indicators
         """
-        logger.info("Starting SMC analysis")
+        logger.debug("Starting SMC analysis")
 
         df_smc = df.copy()
 
@@ -262,7 +338,7 @@ class SMCDetector:
         df_smc = self.detect_fvg(df_smc)
         df_smc = self.detect_liquidity_zones(df_smc)
 
-        logger.info("SMC analysis completed")
+        logger.debug("SMC analysis completed")
 
         return df_smc
 

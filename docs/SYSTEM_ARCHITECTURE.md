@@ -366,7 +366,6 @@ All Analysis Results
 │ └──────────────────────────────────┘           │
 │                                                 │
 │ Filters:                                        │
-│ • EventFilter → Check economic calendar         │
 │ • SentimentFilter → Apply sentiment weight     │
 │ • RiskManager → Verify risk limits             │
 └─────────────────────────────────────────────────┘
@@ -637,17 +636,15 @@ smart_trading_bot/
 │   │
 │   ├── sentiment/
 │   │   ├── finbert_analyzer.py     # FinBERT AI sentiment
-│   │   ├── twitter_sentiment.py    # Twitter data collection
-│   │   └── sentiment_filter.py     # Sentiment aggregation
+│   │   ├── rss_analyzer.py         # RSS news feed analysis
+│   │   ├── coingecko_analyzer.py   # CoinGecko market data
+│   │   ├── hybrid_sentiment.py     # Multi-source aggregation
+│   │   └── sentiment_filter.py     # Sentiment trade filter
 │   │
 │   ├── trading/
 │   │   ├── strategy.py             # Multi-timeframe strategy logic
 │   │   ├── order_executor.py       # Trade execution (paper/live)
 │   │   └── risk_manager.py         # Risk management rules
-│   │
-│   ├── events/
-│   │   ├── economic_calendar.py    # Economic event filtering
-│   │   └── event_filter.py         # Pre-trade event checks
 │   │
 │   ├── backtesting/
 │   │   ├── backtest_engine.py      # Historical simulation

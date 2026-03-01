@@ -1,15 +1,12 @@
 """
 Hybrid Sentiment Analyzer combining multiple free sources with FinBERT:
-- CoinGecko API (35% weight) - market sentiment, news, community data
-- RSS Feeds (35% weight) - major news outlets analyzed by FinBERT
-- Reddit API (20% weight) - community posts analyzed by FinBERT
-- Fear & Greed Index (10% weight) - market-wide sentiment indicator
+- RSS Feeds (45% weight) - major news outlets analyzed by FinBERT
+- CoinGecko API (35% weight) - market metrics (community, dev, momentum)
+- Fear & Greed Index (20% weight) - market-wide sentiment indicator
 """
 import requests
-import praw
 from typing import Dict, Optional, List
 from datetime import datetime, timedelta
-import os
 from src.utils.logger import get_logger
 from src.sentiment.finbert_analyzer import FinBERTAnalyzer
 from src.sentiment.rss_analyzer import RSSAnalyzer
@@ -20,13 +17,12 @@ logger = get_logger()
 
 class HybridSentimentAnalyzer:
     """
-    Combines 4 free sentiment sources with FinBERT analysis
+    Combines 3 free sentiment sources with FinBERT analysis
 
     Sources:
-    1. CoinGecko (35%): Market sentiment + news → FinBERT analysis
-    2. RSS Feeds (35%): CoinDesk, CoinTelegraph, etc. → FinBERT analysis
-    3. Reddit (20%): Community posts → FinBERT analysis
-    4. Fear & Greed Index (10%): Direct market sentiment score
+    1. RSS Feeds (45%): CoinDesk, CoinTelegraph, etc. → FinBERT analysis
+    2. CoinGecko (35%): Market metrics (community, dev activity, momentum)
+    3. Fear & Greed Index (20%): Direct market sentiment score
     """
 
     def __init__(self, config: Dict):
@@ -41,113 +37,123 @@ class HybridSentimentAnalyzer:
         # Initialize CoinGecko analyzer (no API key needed!)
         self.coingecko = CoinGeckoAnalyzer()
 
-        # Reddit API (free)
-        self.reddit = None
-        if os.getenv('REDDIT_CLIENT_ID'):
-            try:
-                self.reddit = praw.Reddit(
-                    client_id=os.getenv('REDDIT_CLIENT_ID'),
-                    client_secret=os.getenv('REDDIT_CLIENT_SECRET'),
-                    user_agent='SmartTradingBot/1.0'
-                )
-                logger.info("Reddit API initialized successfully")
-            except Exception as e:
-                logger.warning(f"Reddit API setup failed: {e}")
-
         # Weights for each source
         self.weights = {
+            'rss': 0.45,
             'coingecko': 0.35,
-            'rss': 0.35,
-            'reddit': 0.20,
-            'fear_greed': 0.10
+            'fear_greed': 0.20
         }
+
+        # Sentiment cache with staleness tracking
+        self._cache = {}           # {symbol: {'score': ..., 'breakdown': ..., 'timestamp': ...}}
+        self._cache_ttl = 300      # 5 minutes — sentiment doesn't change second by second
+        self._source_failures = {} # {source_name: consecutive_failure_count}
 
     def get_sentiment(self, symbol: str) -> Dict:
         """
-        Get combined sentiment score for a symbol
+        Get combined sentiment score for a symbol.
+        Uses a 5-minute cache to avoid hammering APIs and getting stale re-fetches.
+        Tracks source failures for graceful degradation.
 
         Args:
             symbol: Trading pair (e.g., 'BTC/USDT')
 
         Returns:
-            Dict with sentiment score (-1 to 1) and breakdown
+            Dict with sentiment score (-1 to 1), breakdown, sources_available count, and staleness
         """
+        # Check cache first
+        now = datetime.now()
+        if symbol in self._cache:
+            cached = self._cache[symbol]
+            age_seconds = (now - cached['timestamp']).total_seconds()
+            if age_seconds < self._cache_ttl:
+                logger.debug(f"Sentiment cache hit for {symbol} (age: {age_seconds:.0f}s)")
+                return cached
+
         # Extract base currency
         base = symbol.split('/')[0]
 
-        # Get sentiment from each source
-        coingecko_score = self._get_coingecko_sentiment(base)
-        rss_score = self._get_rss_sentiment(base)
-        reddit_score = self._get_reddit_sentiment(base)
-        fear_greed_score = self._get_fear_greed_index()
+        # Get sentiment from each source (with failure tracking)
+        rss_score = self._safe_fetch('rss', lambda: self._get_rss_sentiment(base))
+        coingecko_score = self._safe_fetch('coingecko', lambda: self._get_coingecko_sentiment(base))
+        fear_greed_score = self._safe_fetch('fear_greed', lambda: self._get_fear_greed_index())
 
-        # Weighted average
+        # Weighted average (only from sources that returned data)
         total_weight = 0
         weighted_score = 0
+        sources_available = 0
 
-        if coingecko_score is not None:
-            weighted_score += coingecko_score * self.weights['coingecko']
-            total_weight += self.weights['coingecko']
-
-        if rss_score is not None:
-            weighted_score += rss_score * self.weights['rss']
-            total_weight += self.weights['rss']
-
-        if reddit_score is not None:
-            weighted_score += reddit_score * self.weights['reddit']
-            total_weight += self.weights['reddit']
-
-        if fear_greed_score is not None:
-            weighted_score += fear_greed_score * self.weights['fear_greed']
-            total_weight += self.weights['fear_greed']
+        for source_name, score in [('rss', rss_score), ('coingecko', coingecko_score),
+                                    ('fear_greed', fear_greed_score)]:
+            if score is not None:
+                weighted_score += score * self.weights[source_name]
+                total_weight += self.weights[source_name]
+                sources_available += 1
 
         # Normalize by total weight used
         final_score = weighted_score / total_weight if total_weight > 0 else 0
 
-        return {
+        # Reduce confidence when few sources are available
+        # If only 1 source, dampen score toward neutral (less reliable)
+        if sources_available == 1:
+            final_score *= 0.5  # Half-weight single-source sentiment
+            logger.warning(f"Only 1 sentiment source available for {symbol} — dampening score")
+        elif sources_available == 0:
+            final_score = 0.0
+            logger.warning(f"No sentiment sources available for {symbol} — returning neutral")
+
+        result = {
             'score': final_score,
             'breakdown': {
-                'coingecko': coingecko_score,
                 'rss': rss_score,
-                'reddit': reddit_score,
+                'coingecko': coingecko_score,
                 'fear_greed': fear_greed_score
             },
-            'timestamp': datetime.now()
+            'sources_available': sources_available,
+            'sources_total': 3,
+            'timestamp': now
         }
+
+        # Update cache
+        self._cache[symbol] = result
+
+        return result
+
+    def _safe_fetch(self, source_name: str, fetch_fn) -> Optional[float]:
+        """
+        Safely fetch sentiment from a source with failure tracking.
+        After 3 consecutive failures, back off (skip) to avoid slowing down the bot.
+        """
+        consecutive_failures = self._source_failures.get(source_name, 0)
+
+        # After 3 consecutive failures, skip for the next cycle (reset after success)
+        if consecutive_failures >= 3:
+            logger.debug(f"Skipping {source_name} sentiment (failed {consecutive_failures}x consecutively)")
+            return None
+
+        try:
+            result = fetch_fn()
+            if result is not None:
+                self._source_failures[source_name] = 0  # Reset on success
+            return result
+        except Exception as e:
+            self._source_failures[source_name] = consecutive_failures + 1
+            logger.warning(f"Sentiment source {source_name} failed ({consecutive_failures + 1}x): {e}")
+            return None
 
     def _get_coingecko_sentiment(self, currency: str) -> Optional[float]:
         """
-        Get sentiment from CoinGecko API + analyze news with FinBERT
+        Get sentiment from CoinGecko market metrics (community, dev, momentum).
+        Uses the working /coins/{id} endpoint — NOT the deprecated status_updates.
 
         Returns:
             Sentiment score -1 to 1, or None if failed
         """
         try:
-            # Get market sentiment metrics
-            sentiment_score = self.coingecko.calculate_sentiment_score(
-                currency)
-
-            if sentiment_score is None:
-                return None
-
-            # Get status updates/news for FinBERT analysis
-            news_items = self.coingecko.get_status_updates(currency)
-
-            if news_items:
-                # Analyze news with FinBERT
-                finbert_result = self.finbert.analyze_batch(news_items)
-                finbert_score = finbert_result.get('compound', 0)
-
-                # Combine market metrics (70%) + news sentiment (30%)
-                combined_score = sentiment_score * 0.7 + finbert_score * 0.3
-                logger.info(f"CoinGecko sentiment for {currency}: {combined_score:.3f} "
-                            f"(metrics: {sentiment_score:.3f}, news: {finbert_score:.3f})")
-                return combined_score
-            else:
-                # No news available, use market metrics only
-                logger.info(
-                    f"CoinGecko sentiment for {currency}: {sentiment_score:.3f} (metrics only)")
-                return sentiment_score
+            sentiment_score = self.coingecko.calculate_sentiment_score(currency)
+            if sentiment_score is not None:
+                logger.info(f"CoinGecko sentiment for {currency}: {sentiment_score:.3f}")
+            return sentiment_score
 
         except Exception as e:
             logger.warning(f"CoinGecko sentiment error: {e}")
@@ -177,52 +183,6 @@ class HybridSentimentAnalyzer:
 
         except Exception as e:
             logger.warning(f"RSS sentiment error: {e}")
-
-        return None
-
-    def _get_reddit_sentiment(self, currency: str) -> Optional[float]:
-        """
-        Get sentiment from Reddit using FinBERT
-
-        Returns:
-            Sentiment score -1 to 1, or None if failed
-        """
-        if not self.reddit:
-            return None
-
-        try:
-            # Map currency to subreddit
-            subreddit_map = {
-                'BTC': 'bitcoin',
-                'ETH': 'ethereum',
-                'USDT': 'CryptoCurrency'
-            }
-
-            subreddit_name = subreddit_map.get(currency, 'CryptoCurrency')
-            subreddit = self.reddit.subreddit(subreddit_name)
-
-            # Collect post titles mentioning the currency
-            titles = []
-
-            for post in subreddit.hot(limit=100):
-                if currency.lower() in post.title.lower():
-                    titles.append(post.title)
-
-                if len(titles) >= 20:
-                    break
-
-            if not titles:
-                return None
-
-            # Analyze with FinBERT
-            sentiment_result = self.finbert.get_aggregate_sentiment(titles)
-            score = sentiment_result.get('sentiment_score', 0)
-
-            logger.info(f"Reddit sentiment for {currency}: {score:.3f}")
-            return score
-
-        except Exception as e:
-            logger.warning(f"Reddit API error: {e}")
 
         return None
 

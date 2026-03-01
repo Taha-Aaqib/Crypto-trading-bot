@@ -528,15 +528,7 @@ Why strict in main? Prevents marginal trades with lower win rate
 │ │ 2.0 >= 2.0? YES ✅                    │                   │
 │ └──────────────────────────────────────┘                   │
 │                                                             │
-│ ┌──────────────────────────────────────┐                   │
-│ │ CHECK 5: Event Filter                │                   │
-│ ├──────────────────────────────────────┤                   │
-│ │ Next 1 hour: No high-impact events   │                   │
-│ │ (Fed decision, CPI, etc.)            │                   │
-│ │ Safe to trade? YES ✅                 │                   │
-│ └──────────────────────────────────────┘                   │
-│                                                             │
-│ All 5 Risk Checks Passed ✅                                 │
+│ All 4 Risk Checks Passed ✅                                 │
 │                                                             │
 │ OUTPUT: Risk Approved → Proceed to Layer 7                  │
 │ ❌ FAIL: Risk check failed → STOP (No trade)               │
@@ -833,8 +825,7 @@ Result: Sentiment acts as final filter in 15-20% of trades
 3. Strict 4-condition check in production (removes 20%)
 4. Risk management limits (max 3 positions, 2% per trade)
 5. Daily loss circuit breaker (5% max)
-6. Economic event filter
-7. Position size validation
+6. Position size validation
 
 Result: Only 8-12 trades/month from thousands of analyzed candles."
 

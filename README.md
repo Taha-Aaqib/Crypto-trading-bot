@@ -34,11 +34,6 @@ An advanced, modular trading system designed to operate in real-time cryptocurre
   - News sentiment integration
   - Trade filtering based on market sentiment
 
-- **Economic Event Filtering**
-
-  - Pauses trading during major events (CPI, FOMC, etc.)
-  - Configurable pause windows before and after events
-
 - **Risk Management**
 
   - Position sizing based on ATR
@@ -69,8 +64,12 @@ The virtual environment `venv` is already set up and packages are installed.
 To activate:
 
 ```powershell
+
 .\venv\Scripts\Activate.ps1
 ```
+
+ cd "d:\FYP\Crypto-trading-bot";
+ 
 
 ### 3. Configuration
 
@@ -96,6 +95,10 @@ twitter:
 ```powershell
 .\venv\Scripts\Activate.ps1
 ```
+
+cd path; Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
+.\venv\Scripts\Activate.ps1
+
 
 2. Run the main bot:
 
@@ -134,8 +137,7 @@ smart_trading_bot/
 ├── src/
 │   ├── data/                 # Data fetching and preprocessing
 │   ├── indicators/           # SMC detector and technical indicators
-│   ├── sentiment/            # Twitter and sentiment analysis
-│   ├── events/               # Economic event filtering
+│   ├── sentiment/            # Sentiment analysis
 │   ├── trading/              # Strategy, risk management, execution
 │   ├── models/               # ML models (future)
 │   ├── backtesting/          # Backtesting engine
@@ -190,7 +192,6 @@ smart_trading_bot/
 
 - Real-time trading module integration
 - Risk management engine refinement
-- Economic event filter integration
 - Live trading testing
 - Dashboard completion
 - Final report and presentation
@@ -221,11 +222,10 @@ pytest tests/
 2. **Check 4H timeframe** for trend structure confirmation
 3. **Monitor 15M timeframe** for entry opportunities
 4. **Validate with EMA filter** (price > EMA50 > EMA200 for long)
-5. **Check sentiment** from Twitter and news sources
-6. **Verify no major economic events** are scheduled
-7. **Calculate position size** based on risk management
-8. **Execute trade** with stop loss and take profit
-9. **Monitor and manage** open positions
+5. **Check sentiment** from news and market data
+6. **Calculate position size** based on risk management
+7. **Execute trade** with stop loss and take profit
+8. **Monitor and manage** open positions
 
 ## Risk Disclaimer
 

@@ -4,7 +4,6 @@ numpy>=1.24.0
 ccxt>=4.0.0
 
 # Sentiment Analysis
-tweepy>=4.14.0
 textblob>=0.17.0
 vaderSentiment>=3.3.2
 transformers>=4.30.0  # For FinBERT
@@ -34,5 +33,7 @@ schedule>=1.2.0
 # Additional utilities
 requests>=2.31.0
 nltk>=3.8.0  # For text preprocessing
-praw>=7.7.0  # Reddit API
 feedparser>=6.0.10  # RSS feed parsing
+
+# Testing
+pytest>=8.0.0

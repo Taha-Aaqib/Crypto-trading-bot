@@ -1,0 +1,12 @@
+last_training_time: '2026-03-01T14:16:59.934251'
+training_results:
+  BTC/USDT:
+    samples_trained: 7004
+    success: true
+    test_accuracy: 0.7235865219874358
+    train_accuracy: 0.8043974871501999
+  ETH/USDT:
+    samples_trained: 7004
+    success: true
+    test_accuracy: 0.6384922901199315
+    train_accuracy: 0.6492004568817819
