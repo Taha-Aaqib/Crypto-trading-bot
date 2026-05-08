@@ -1,11 +1,11 @@
 """
-AI-Enhanced Trading Model - ✅ THIS FILE LOADS YOUR TRAINED BTC & ETH MODELS!
+AI-Enhanced Trading Model - RandomForest Classifier
 Lightweight ML model for signal prediction and pattern recognition
 Uses scikit-learn for fast, interpretable predictions
 
 MODEL LOADING:
-- BTC model: models/saved_models/BTC_USDT/lstm_model.pkl (73.3% accuracy)
-- ETH model: models/saved_models/ETH_USDT/lstm_model.pkl (59.7% accuracy)
+- BTC model: models/saved_models/BTC_USDT/random_forest_model.pkl (73.3% accuracy)
+- ETH model: models/saved_models/ETH_USDT/random_forest_model.pkl (59.7% accuracy)
 """
 
 import numpy as np
@@ -40,12 +40,12 @@ class TradingModel:
             symbol_clean = symbol.replace('/', '_')
             model_dir = f"models/saved_models/{symbol_clean}"
             os.makedirs(model_dir, exist_ok=True)
-            self.model_path = f"{model_dir}/lstm_model.pkl"
-            self.scaler_path = f"{model_dir}/scaler.pkl"
+            self.model_path = f"{model_dir}/random_forest_model.pkl"
+            self.scaler_path = f"{model_dir}/rf_scaler.pkl"
         else:
             # Fallback to old paths if no symbol specified
-            self.model_path = "models/saved_models/trading_model.pkl"
-            self.scaler_path = "models/saved_models/scaler.pkl"
+            self.model_path = "models/saved_models/random_forest_model.pkl"
+            self.scaler_path = "models/saved_models/rf_scaler.pkl"
 
         self.is_trained = False
 
@@ -261,26 +261,43 @@ class TradingModel:
             confidence: probability score
         """
         if not self.is_trained:
-            logger.warning("Model not trained, returning neutral signal")
+            logger.warning(f"Model for {self.symbol} not trained, returning neutral signal")
             return 0, 0.0
 
-        # Prepare features
-        X = self.prepare_features(df)
+        try:
+            # Prepare features
+            X = self.prepare_features(df)
 
-        # Get last row
-        X_latest = X.iloc[[-1]]
+            # Get last row
+            if len(X) == 0:
+                logger.warning(f"No valid features prepared for {self.symbol}, returning neutral")
+                return 0, 0.0
+            
+            X_latest = X.iloc[[-1]]
 
-        # Scale
-        X_scaled = self.scaler.transform(X_latest)
+            # Check for NaN values in latest features
+            if X_latest.isna().any().any():
+                nan_cols = X_latest.columns[X_latest.isna().any()].tolist()
+                logger.warning(f"NaN values in features for {self.symbol}: {nan_cols}, filling with 0")
+                X_latest = X_latest.fillna(0)
 
-        # Predict
-        prediction = self.model.predict(X_scaled)[0]
-        probabilities = self.model.predict_proba(X_scaled)[0]
+            # Scale
+            X_scaled = self.scaler.transform(X_latest)
 
-        # Get confidence (max probability)
-        confidence = max(probabilities)
+            # Predict
+            prediction = self.model.predict(X_scaled)[0]
+            probabilities = self.model.predict_proba(X_scaled)[0]
 
-        return int(prediction), float(confidence)
+            # Get confidence (max probability)
+            confidence = max(probabilities)
+            
+            logger.debug(f"ML prediction for {self.symbol}: {prediction}, confidence: {confidence:.2f}")
+
+            return int(prediction), float(confidence)
+        
+        except Exception as e:
+            logger.error(f"Error in ML prediction for {self.symbol}: {e}")
+            return 0, 0.0
 
     def save_model(self):
         """Save trained model and scaler"""
@@ -295,12 +312,24 @@ class TradingModel:
     def load_model(self):
         """Load trained model and scaler"""
         try:
-            if os.path.exists(self.model_path) and os.path.exists(self.scaler_path):
+            logger.info(f"Attempting to load model from: {self.model_path}")
+            logger.info(f"Attempting to load scaler from: {self.scaler_path}")
+            
+            model_exists = os.path.exists(self.model_path)
+            scaler_exists = os.path.exists(self.scaler_path)
+            
+            logger.info(f"Model file exists: {model_exists}, Scaler file exists: {scaler_exists}")
+            
+            if model_exists and scaler_exists:
                 self.model = joblib.load(self.model_path)
                 self.scaler = joblib.load(self.scaler_path)
                 self.is_trained = True
-                logger.info(f"Model loaded from {self.model_path}")
+                logger.info(f"✅ Model loaded successfully from {self.model_path}")
             else:
-                logger.info("No saved model found")
+                if not model_exists:
+                    logger.warning(f"Model file not found: {self.model_path}")
+                if not scaler_exists:
+                    logger.warning(f"Scaler file not found: {self.scaler_path}")
         except Exception as e:
             logger.error(f"Error loading model: {e}")
+            self.is_trained = False

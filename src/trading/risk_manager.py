@@ -15,9 +15,10 @@ logger = get_logger()
 class RiskManager:
     """Manage trading risk and position sizing"""
 
-    def __init__(self, config: Dict, db_manager):
+    def __init__(self, config: Dict, db_manager, exchange=None):
         self.config = config
         self.db_manager = db_manager
+        self.exchange = exchange  # Set later by TradingBot after OrderExecutor init
         self.risk_config = config['risk']
         self.trading_config = config['trading']
 
@@ -26,44 +27,74 @@ class RiskManager:
         self.max_daily_loss = self.risk_config['max_daily_loss']
         self.max_open_positions = self.trading_config['max_open_positions']
 
-        # Portfolio
+        # Portfolio — config value used as fallback when exchange balance isn't available
         self.initial_capital = config.get(
-            'backtest', {}).get('initial_capital', 10000)
+            'backtest', {}).get('initial_capital', 1000)
         self.current_capital = self.initial_capital
+        self._cached_balance = None
+        self._balance_cache_time = None
 
         logger.info(
             f"Risk Manager initialized - Max risk/trade: {self.max_risk_per_trade*100}%")
 
     def calculate_position_size(self, entry_price: float, stop_loss: float) -> float:
         """
-        Calculate position size based on risk management rules
+        Calculate position size (margin) in USD.
+        For futures, the exchange applies leverage on top of this margin.
 
-        Args:
-            entry_price: Entry price for trade
-            stop_loss: Stop loss price
-
-        Returns:
-            Position size in quote currency (e.g., USDT)
+        Returns USD margin amount (e.g. $20) — NOT base currency.
         """
-        # Get current portfolio value
         portfolio_value = self.get_portfolio_value()
+        available_balance = self.get_available_balance()
 
-        # Calculate position size
-        position_size = calculate_position_size(
+        # Helper returns position size in BASE currency (e.g. BTC)
+        position_size_base = calculate_position_size(
             portfolio_value,
             self.max_risk_per_trade,
             entry_price,
             stop_loss
         )
 
-        # Ensure position doesn't exceed configured max
+        # Convert base → USD (this is the margin amount)
+        position_size_usd = position_size_base * entry_price
+
+        # Cap at configured maximum margin per trade
         max_position = self.trading_config.get('position_size_usd', 100)
-        position_size = min(position_size, max_position)
+        position_size_usd = min(position_size_usd, max_position)
+
+        # Never use more than 50% of portfolio on a single trade
+        position_size_usd = min(position_size_usd, portfolio_value * 0.5)
+
+        # Never exceed available balance (leaves $1 buffer for fees)
+        if available_balance > 1:
+            position_size_usd = min(position_size_usd, available_balance - 1)
+        else:
+            logger.warning(f"Insufficient available balance: ${available_balance:.2f}")
+            return 0
+
+        # Futures: ensure leveraged risk on SL hit stays within max_risk_per_trade
+        market_type = self.trading_config.get('market_type', 'spot')
+        if market_type == 'futures':
+            leverage = self.trading_config.get('leverage', 1)
+            price_risk = abs(entry_price - stop_loss)
+            if price_risk > 0 and leverage > 1:
+                leveraged_base = (position_size_usd * leverage) / entry_price
+                max_loss_on_sl = price_risk * leveraged_base
+                max_allowed_loss = portfolio_value * self.max_risk_per_trade
+                if max_loss_on_sl > max_allowed_loss:
+                    position_size_usd = (max_allowed_loss * entry_price) / (price_risk * leverage)
+                    logger.info(f"Futures risk limit: margin reduced to ${position_size_usd:.2f}")
+
+        # Final minimum check
+        if position_size_usd < 5:  # Binance minimum notional
+            logger.warning(f"Position size ${position_size_usd:.2f} too small (min $5)")
+            return 0
 
         logger.info(
-            f"Calculated position size: {position_size:.2f} (Entry: {entry_price}, SL: {stop_loss})")
+            f"Position size: ${position_size_usd:.2f} USD margin "
+            f"(Portfolio: ${portfolio_value:.2f}, Available: ${available_balance:.2f})")
 
-        return position_size
+        return position_size_usd
 
     def can_open_new_trade(self) -> bool:
         """
@@ -77,6 +108,12 @@ class RiskManager:
         if len(open_trades) >= self.max_open_positions:
             logger.warning(
                 f"Max open positions ({self.max_open_positions}) reached")
+            return False
+
+        # Check available balance (need at least $5 for Binance minimum)
+        available = self.get_available_balance()
+        if available < 5:
+            logger.warning(f"Insufficient available balance: ${available:.2f}")
             return False
 
         # Check daily loss limit
@@ -113,7 +150,7 @@ class RiskManager:
         if today_trades.empty:
             return False
 
-        daily_pnl = today_trades['pnl'].sum()
+        daily_pnl = today_trades['pnl'].dropna().sum()
         max_loss = self.get_portfolio_value() * self.max_daily_loss
 
         if daily_pnl < -max_loss:
@@ -130,15 +167,21 @@ class RiskManager:
         Returns:
             True if circuit breaker triggered, False otherwise
         """
-        trades_df = self.db_manager.get_trade_history(limit=10)
+        trades_df = self.db_manager.get_trade_history(limit=20)
 
-        if len(trades_df) < 5:
+        if trades_df.empty:
             return False
 
-        # Check last 5 trades
-        last_5_trades = trades_df.head(5)
+        # Only consider CLOSED trades (open trades have NaN pnl and would bypass the check)
+        closed_trades = trades_df[trades_df['pnl'].notna()]
 
-        # If all last 5 trades are losses, trigger circuit breaker
+        if len(closed_trades) < 5:
+            return False
+
+        # Check last 5 closed trades
+        last_5_trades = closed_trades.head(5)
+
+        # If all last 5 closed trades are losses, trigger circuit breaker
         all_losses = all(last_5_trades['pnl'] < 0)
 
         if all_losses:
@@ -149,26 +192,87 @@ class RiskManager:
 
     def get_portfolio_value(self) -> float:
         """
-        Calculate current portfolio value
-
-        Returns:
-            Current portfolio value
+        Get current portfolio value.
+        Live mode: fetches actual wallet balance from exchange.
+        Paper mode: uses initial_capital + closed trade P&L.
         """
-        # Get all closed trades
+        mode = self.trading_config.get('mode', 'paper')
+
+        # Live mode: use real exchange balance
+        if mode == 'live' and self.exchange:
+            try:
+                balance = self._fetch_exchange_balance()
+                if balance is not None:
+                    return balance
+            except Exception as e:
+                logger.debug(f"Could not fetch live balance, using DB fallback: {e}")
+
+        # Paper mode or fallback: initial_capital + closed P&L
         trades_df = self.db_manager.get_trade_history(limit=1000)
 
         if trades_df.empty:
             return self.initial_capital
 
-        # Calculate total PnL
         closed_trades = trades_df[trades_df['pnl'].notna()]
-        total_pnl = closed_trades['pnl'].sum(
-        ) if not closed_trades.empty else 0
+        total_pnl = closed_trades['pnl'].sum() if not closed_trades.empty else 0
 
-        # Current value = initial capital + total PnL
-        current_value = self.initial_capital + total_pnl
+        return self.initial_capital + total_pnl
 
-        return current_value
+    def get_available_balance(self) -> float:
+        """
+        Get available balance (total - margin locked in open trades).
+        Live mode: fetches free balance from exchange.
+        Paper mode: portfolio value minus open trade margins.
+        """
+        mode = self.trading_config.get('mode', 'paper')
+
+        # Live mode: use exchange's free balance (already deducts open margins)
+        if mode == 'live' and self.exchange:
+            try:
+                balance = self._fetch_exchange_balance(free_only=True)
+                if balance is not None:
+                    return balance
+            except Exception as e:
+                logger.debug(f"Could not fetch free balance: {e}")
+
+        # Paper mode or fallback: portfolio - open trade margins
+        portfolio = self.get_portfolio_value()
+        open_trades = self.db_manager.get_open_trades()
+        locked_margin = sum(t.quantity for t in open_trades)  # quantity = USD margin
+
+        available = portfolio - locked_margin
+        return max(available, 0)
+
+    def _fetch_exchange_balance(self, free_only: bool = False) -> float:
+        """
+        Fetch USDT balance from exchange. Caches for 30 seconds to avoid rate limits.
+        """
+        now = datetime.now()
+
+        # Use cache if fresh (< 30 seconds old)
+        if (self._cached_balance is not None and self._balance_cache_time
+                and (now - self._balance_cache_time).total_seconds() < 30):
+            bal = self._cached_balance
+            return bal.get('free', 0) if free_only else bal.get('total', 0)
+
+        try:
+            balance = self.exchange.fetch_balance()
+            usdt = balance.get('USDT', {})
+            self._cached_balance = {
+                'total': float(usdt.get('total', 0) or 0),
+                'free': float(usdt.get('free', 0) or 0),
+                'used': float(usdt.get('used', 0) or 0),
+            }
+            self._balance_cache_time = now
+
+            logger.debug(f"Exchange balance: total=${self._cached_balance['total']:.2f}, "
+                         f"free=${self._cached_balance['free']:.2f}, "
+                         f"used=${self._cached_balance['used']:.2f}")
+
+            return self._cached_balance['free'] if free_only else self._cached_balance['total']
+        except Exception as e:
+            logger.error(f"Failed to fetch exchange balance: {e}")
+            return None
 
     def validate_trade(self, signal: Dict) -> tuple:
         """

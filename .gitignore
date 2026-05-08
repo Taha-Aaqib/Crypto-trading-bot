@@ -49,15 +49,18 @@ data/trading_bot.db
 config/config.yaml
 # Keep config.yaml in git but remind users to update it
 
-# Data files
-data/raw/*.csv
-data/processed/*.csv
-data/backtest/*.csv
+# Data files - ignore all generated/downloaded data
+data/
+!data/.gitkeep
 
-# Model files
-models/saved_models/*.pkl
-models/saved_models/*.h5
-models/saved_models/*.pth
+# Model files - ignore all trained model artifacts
+models/saved_models/
+!models/saved_models/.gitkeep
+*.pkl
+*.pt
+*.pth
+*.h5
+*.onnx
 
 # OS
 .DS_Store

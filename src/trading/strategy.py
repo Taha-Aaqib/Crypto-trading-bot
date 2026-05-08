@@ -1,6 +1,6 @@
 """
 Main Trading Strategy
-Integrates SMC, Technical Indicators, Sentiment, and Event Filters
+Integrates SMC, Technical Indicators, and Sentiment
 """
 
 import pandas as pd
@@ -9,7 +9,6 @@ from datetime import datetime
 from src.indicators.smc_detector import SMCDetector
 from src.indicators.ta_indicators import TechnicalIndicators
 from src.sentiment.sentiment_filter import SentimentFilter
-from src.events.event_filter import EventFilter
 from src.utils.logger import get_logger
 
 logger = get_logger()
@@ -21,7 +20,6 @@ class TradingStrategy:
     - Multi-timeframe SMC analysis (1D bias, 4H structure, 15M entry)
     - EMA trend filter (50/200)
     - Sentiment filtering
-    - Economic event filtering
     """
 
     def __init__(self, config: Dict):
@@ -32,7 +30,6 @@ class TradingStrategy:
         self.smc_detector = SMCDetector(config)
         self.ta_indicators = TechnicalIndicators(config)
         self.sentiment_filter = SentimentFilter(config)
-        self.event_filter = EventFilter(config)
 
         logger.info("Trading strategy initialized")
 
@@ -59,13 +56,31 @@ class TradingStrategy:
         logger.info("Starting multi-timeframe analysis")
 
         # 1D Timeframe: Directional Bias
+        # Look at recent candles (not just the last one) since SMC events are sparse
         df_1d_smc = self.smc_detector.analyze_smc(df_1d)
         latest_1d = df_1d_smc.iloc[-1]
 
         bias_1d = 'neutral'
-        if latest_1d.get('bos_bullish') or latest_1d.get('choch_bullish'):
+        lookback_1d = min(20, len(df_1d_smc))
+        recent_1d = df_1d_smc.iloc[-lookback_1d:]
+        # Find most recent CHOCH/BOS direction
+        bull_choch_1d = recent_1d['choch_bullish'].values.astype(bool)
+        bear_choch_1d = recent_1d['choch_bearish'].values.astype(bool)
+        bull_bos_1d = recent_1d['bos_bullish'].values.astype(bool)
+        bear_bos_1d = recent_1d['bos_bearish'].values.astype(bool)
+
+        last_bull_pos = -1
+        last_bear_pos = -1
+        if bull_choch_1d.any() or bull_bos_1d.any():
+            bull_mask = bull_choch_1d | bull_bos_1d
+            last_bull_pos = lookback_1d - 1 - bull_mask[::-1].argmax()
+        if bear_choch_1d.any() or bear_bos_1d.any():
+            bear_mask = bear_choch_1d | bear_bos_1d
+            last_bear_pos = lookback_1d - 1 - bear_mask[::-1].argmax()
+
+        if last_bull_pos > last_bear_pos:
             bias_1d = 'bullish'
-        elif latest_1d.get('bos_bearish') or latest_1d.get('choch_bearish'):
+        elif last_bear_pos > last_bull_pos:
             bias_1d = 'bearish'
 
         # 4H Timeframe: Trend Structure
@@ -129,36 +144,55 @@ class TradingStrategy:
             confluence_score -= 0.25
             reasons.append('EMA:bear')
 
-        # RSI (15% weight)
+        # RSI (15% weight) - New logic: RSI as momentum strength
         rsi = latest.get('rsi', 50)
-        if rsi < 35:  # Oversold
-            confluence_score += 0.15
-            reasons.append('RSI:oversold')
-        elif rsi > 65:  # Overbought
-            confluence_score -= 0.15
-            reasons.append('RSI:overbought')
+        if rsi > 55:  # Bullish momentum (strength)
+            rsi_strength = (rsi - 55) / 45  # Scale 55-100 to 0-1
+            confluence_score += 0.15 * rsi_strength
+            reasons.append(f'RSI:bull({rsi:.0f})')
+        elif rsi < 45:  # Bearish momentum (weakness)
+            rsi_weakness = (45 - rsi) / 45  # Scale 0-45 to 1-0
+            confluence_score -= 0.15 * rsi_weakness
+            reasons.append(f'RSI:bear({rsi:.0f})')
+
+        # --- SMC signals: find most recent event in last 50 candles ---
+        smc_lookback = min(50, len(df_smc))
+        recent_smc = df_smc.iloc[-smc_lookback:]
+
+        def _last_true(col):
+            """Position of last True in recent_smc, or -1"""
+            mask = recent_smc[col].values.astype(bool)
+            if mask.any():
+                return smc_lookback - 1 - int(mask[::-1].argmax())
+            return -1
 
         # CHOCH (25% weight - strongest SMC signal)
-        if latest.get('choch_bullish'):
+        last_bull_choch = _last_true('choch_bullish')
+        last_bear_choch = _last_true('choch_bearish')
+        if last_bull_choch > last_bear_choch:
             confluence_score += 0.25
             reasons.append('CHOCH:bull')
-        elif latest.get('choch_bearish'):
+        elif last_bear_choch > last_bull_choch:
             confluence_score -= 0.25
             reasons.append('CHOCH:bear')
 
         # BOS (15% weight)
-        if latest.get('bos_bullish'):
+        last_bull_bos = _last_true('bos_bullish')
+        last_bear_bos = _last_true('bos_bearish')
+        if last_bull_bos > last_bear_bos:
             confluence_score += 0.15
             reasons.append('BOS:bull')
-        elif latest.get('bos_bearish'):
+        elif last_bear_bos > last_bull_bos:
             confluence_score -= 0.15
             reasons.append('BOS:bear')
 
         # FVG (10% weight)
-        if latest.get('fvg_bullish'):
+        last_bull_fvg = _last_true('fvg_bullish')
+        last_bear_fvg = _last_true('fvg_bearish')
+        if last_bull_fvg > last_bear_fvg:
             confluence_score += 0.10
             reasons.append('FVG:bull')
-        elif latest.get('fvg_bearish'):
+        elif last_bear_fvg > last_bull_fvg:
             confluence_score -= 0.10
             reasons.append('FVG:bear')
 
@@ -179,14 +213,16 @@ class TradingStrategy:
         entry_price = latest['close']
 
         if confluence_score >= confluence_threshold:
-            # LONG signal
+            # LONG signal — use swing-point SL via _calculate_stop_loss
+            sl = self._calculate_stop_loss(entry_price, 'long', atr, df_smc=df_smc)
+            tp = self._calculate_take_profit(entry_price, sl, 'long')
             return {
                 'action': 'buy',
                 'symbol': symbol,
                 'direction': 'long',
                 'entry_price': entry_price,
-                'stop_loss': entry_price - (atr * self.config['risk']['stop_loss_atr_multiplier']),
-                'take_profit': entry_price + (atr * self.config['risk']['stop_loss_atr_multiplier'] * self.config['risk']['take_profit_rr_ratio']),
+                'stop_loss': sl,
+                'take_profit': tp,
                 'position_size_usd': self.config.get('trading', {}).get('position_size_usd', 100),
                 'reason': f'Confluence LONG ({confluence_score:.0%}): {" ".join(reasons)}',
                 'confluence_score': confluence_score,
@@ -194,14 +230,16 @@ class TradingStrategy:
             }
 
         elif confluence_score <= -confluence_threshold:
-            # SHORT signal
+            # SHORT signal — use swing-point SL via _calculate_stop_loss
+            sl = self._calculate_stop_loss(entry_price, 'short', atr, df_smc=df_smc)
+            tp = self._calculate_take_profit(entry_price, sl, 'short')
             return {
                 'action': 'sell',
                 'symbol': symbol,
                 'direction': 'short',
                 'entry_price': entry_price,
-                'stop_loss': entry_price + (atr * self.config['risk']['stop_loss_atr_multiplier']),
-                'take_profit': entry_price - (atr * self.config['risk']['stop_loss_atr_multiplier'] * self.config['risk']['take_profit_rr_ratio']),
+                'stop_loss': sl,
+                'take_profit': tp,
                 'position_size_usd': self.config.get('trading', {}).get('position_size_usd', 100),
                 'reason': f'Confluence SHORT ({abs(confluence_score):.0%}): {" ".join(reasons)}',
                 'confluence_score': confluence_score,
@@ -277,29 +315,71 @@ class TradingStrategy:
             reasons.append('EMA:bear')
 
         # SMC Patterns on 15M (40% weight combined - these are key entry triggers)
-        # CHOCH (20% - strongest reversal signal)
-        if latest_15m.get('choch_bullish'):
-            confluence_score += 0.20
-            reasons.append('CHOCH:bull')
-        elif latest_15m.get('choch_bearish'):
-            confluence_score -= 0.20
-            reasons.append('CHOCH:bear')
+        # Use the FULL analyzed dataframe with lookback, not just the last candle
+        # (SMC events are sparse point-events, almost never on the very last candle)
+        df_15m_analyzed = mtf_analysis.get('df_15m_analyzed', None)
 
-        # BOS (12% - trend continuation)
-        if latest_15m.get('bos_bullish'):
-            confluence_score += 0.12
-            reasons.append('BOS:bull')
-        elif latest_15m.get('bos_bearish'):
-            confluence_score -= 0.12
-            reasons.append('BOS:bear')
+        if df_15m_analyzed is not None and len(df_15m_analyzed) > 0:
+            smc_lookback = min(50, len(df_15m_analyzed))
+            recent_smc = df_15m_analyzed.iloc[-smc_lookback:]
 
-        # FVG (8% - entry zone)
-        if latest_15m.get('fvg_bullish'):
-            confluence_score += 0.08
-            reasons.append('FVG:bull')
-        elif latest_15m.get('fvg_bearish'):
-            confluence_score -= 0.08
-            reasons.append('FVG:bear')
+            def _last_true_live(col):
+                if col not in recent_smc.columns:
+                    return -1
+                mask = recent_smc[col].values.astype(bool)
+                return (smc_lookback - 1 - int(mask[::-1].argmax())) if mask.any() else -1
+
+            # CHOCH (20% - strongest reversal signal)
+            last_bull_choch = _last_true_live('choch_bullish')
+            last_bear_choch = _last_true_live('choch_bearish')
+            if last_bull_choch > last_bear_choch:
+                confluence_score += 0.20
+                reasons.append('CHOCH:bull')
+            elif last_bear_choch > last_bull_choch:
+                confluence_score -= 0.20
+                reasons.append('CHOCH:bear')
+
+            # BOS (12% - trend continuation)
+            last_bull_bos = _last_true_live('bos_bullish')
+            last_bear_bos = _last_true_live('bos_bearish')
+            if last_bull_bos > last_bear_bos:
+                confluence_score += 0.12
+                reasons.append('BOS:bull')
+            elif last_bear_bos > last_bull_bos:
+                confluence_score -= 0.12
+                reasons.append('BOS:bear')
+
+            # FVG (8% - entry zone)
+            last_bull_fvg = _last_true_live('fvg_bullish')
+            last_bear_fvg = _last_true_live('fvg_bearish')
+            if last_bull_fvg > last_bear_fvg:
+                confluence_score += 0.08
+                reasons.append('FVG:bull')
+            elif last_bear_fvg > last_bull_fvg:
+                confluence_score -= 0.08
+                reasons.append('FVG:bear')
+        else:
+            # Fallback: use last candle dict (shouldn't happen normally)
+            if latest_15m.get('choch_bullish'):
+                confluence_score += 0.20
+                reasons.append('CHOCH:bull')
+            elif latest_15m.get('choch_bearish'):
+                confluence_score -= 0.20
+                reasons.append('CHOCH:bear')
+
+            if latest_15m.get('bos_bullish'):
+                confluence_score += 0.12
+                reasons.append('BOS:bull')
+            elif latest_15m.get('bos_bearish'):
+                confluence_score -= 0.12
+                reasons.append('BOS:bear')
+
+            if latest_15m.get('fvg_bullish'):
+                confluence_score += 0.08
+                reasons.append('FVG:bull')
+            elif latest_15m.get('fvg_bearish'):
+                confluence_score -= 0.08
+                reasons.append('FVG:bear')
 
         # === SIGNAL GENERATION ===
         # Threshold: 0.35 = need at least 35% confluence
@@ -345,17 +425,15 @@ class TradingStrategy:
             logger.info(f"Signal rejected by sentiment filter")
             return None
 
-        # Apply event filter
-        if not self.event_filter.is_trading_allowed():
-            logger.info(f"Signal rejected by event filter")
-            return None
-
         # Calculate stop loss and take profit
+        # Pass the analyzed 15M dataframe so SL can use swing points (SMC approach)
         atr = latest_15m.get('atr', 0)
+        df_15m_analyzed = mtf_analysis.get('df_15m_analyzed', None)
         signal['stop_loss'] = self._calculate_stop_loss(
             signal['entry_price'],
             signal['direction'],
-            atr
+            atr,
+            df_smc=df_15m_analyzed
         )
         signal['take_profit'] = self._calculate_take_profit(
             signal['entry_price'],
@@ -363,8 +441,19 @@ class TradingStrategy:
             signal['direction']
         )
 
+        # Validate that stop loss has meaningful distance from entry price
+        price_distance = abs(signal['entry_price'] - signal['stop_loss']) / signal['entry_price']
+        min_distance_percent = 0.001  # 0.1% minimum
+        
+        if price_distance < min_distance_percent:
+            logger.warning(
+                f"Invalid signal: SL distance too small ({price_distance*100:.4f}% < {min_distance_percent*100}%). "
+                f"Entry: {signal['entry_price']}, SL: {signal['stop_loss']}")
+            return None
+
         logger.info(
-            f"[SIGNAL] Valid {signal['direction'].upper()} signal for {symbol} at {signal['entry_price']}")
+            f"[SIGNAL] Valid {signal['direction'].upper()} signal for {symbol} at {signal['entry_price']:.2f} (SL: {signal['stop_loss']:.2f})")
+
 
         return signal
 
@@ -372,15 +461,80 @@ class TradingStrategy:
         self,
         entry_price: float,
         direction: str,
-        atr: float
+        atr: float,
+        df_smc: pd.DataFrame = None
     ) -> float:
-        """Calculate stop loss using ATR"""
-        atr_multiplier = self.config['risk']['stop_loss_atr_multiplier']
+        """
+        Calculate stop loss using SMC swing points with ATR/percentage fallbacks.
 
-        if direction == 'long':
-            stop_loss = entry_price - (atr * atr_multiplier)
-        else:  # short
-            stop_loss = entry_price + (atr * atr_multiplier)
+        Priority:
+          1. Recent swing high/low from SMC analysis (structural level)
+          2. ATR-based stop loss
+          3. Percentage-based fallback (always valid)
+
+        For longs:  SL is placed below the nearest recent swing low
+        For shorts: SL is placed above the nearest recent swing high
+        """
+        atr_multiplier = self.config['risk']['stop_loss_atr_multiplier']
+        fallback_sl_percent = self.config['risk'].get('stop_loss_percent', 0.02)  # 2% default
+
+        # Sanitise ATR early — used by multiple branches
+        if pd.isna(atr) or atr <= 0:
+            atr = entry_price * fallback_sl_percent / atr_multiplier  # derive a sensible ATR
+            logger.warning(f"ATR invalid, derived fallback ATR={atr:.2f}")
+
+        sl_buffer = atr * 0.3   # small buffer beyond the swing level
+        stop_loss = None
+
+        # --- 1. Try swing-point based SL (proper SMC approach) ---
+        if df_smc is not None and 'swing_high' in df_smc.columns and 'swing_low' in df_smc.columns:
+            # Only look at recent swings (last 80 candles keeps it relevant)
+            lookback = min(80, len(df_smc))
+            recent = df_smc.iloc[-lookback:]
+
+            if direction == 'long':
+                swing_lows = recent['swing_low'].dropna()
+                # Keep only swing lows that are BELOW entry (valid for long SL)
+                valid = swing_lows[swing_lows < entry_price]
+                if len(valid) > 0:
+                    # Pick the NEAREST (closest to entry) swing low — best structural level
+                    nearest_swing = valid.iloc[-1]  # most recent below entry
+                    candidate = nearest_swing - sl_buffer
+                    # Sanity: SL shouldn't be more than 5% away or less than 0.3%
+                    dist_pct = (entry_price - candidate) / entry_price
+                    if 0.003 <= dist_pct <= 0.05:
+                        stop_loss = candidate
+                        logger.info(f"  SL (swing low): {nearest_swing:.2f} - buffer = {stop_loss:.2f} ({dist_pct*100:.2f}%)")
+            else:  # short
+                swing_highs = recent['swing_high'].dropna()
+                valid = swing_highs[swing_highs > entry_price]
+                if len(valid) > 0:
+                    nearest_swing = valid.iloc[-1]  # most recent above entry
+                    candidate = nearest_swing + sl_buffer
+                    dist_pct = (candidate - entry_price) / entry_price
+                    if 0.003 <= dist_pct <= 0.05:
+                        stop_loss = candidate
+                        logger.info(f"  SL (swing high): {nearest_swing:.2f} + buffer = {stop_loss:.2f} ({dist_pct*100:.2f}%)")
+
+        # --- 2. ATR-based fallback ---
+        if stop_loss is None:
+            atr_sl = atr * atr_multiplier
+            min_sl_distance = entry_price * fallback_sl_percent
+
+            if atr_sl >= min_sl_distance:
+                if direction == 'long':
+                    stop_loss = entry_price - atr_sl
+                else:
+                    stop_loss = entry_price + atr_sl
+                logger.info(f"  SL (ATR): {stop_loss:.2f} (ATR={atr:.2f} x {atr_multiplier})")
+
+        # --- 3. Percentage-based last resort (always valid) ---
+        if stop_loss is None:
+            if direction == 'long':
+                stop_loss = entry_price * (1 - fallback_sl_percent)
+            else:
+                stop_loss = entry_price * (1 + fallback_sl_percent)
+            logger.warning(f"  SL (% fallback): {stop_loss:.2f} ({fallback_sl_percent*100}%)")
 
         return stop_loss
 
@@ -418,34 +572,45 @@ class TradingStrategy:
         Returns:
             Tuple of (should_exit: bool, reason: str)
         """
+        # Guard: if SL/TP is missing, skip price-based exit checks but still check counter-trend
+        sl = trade.get('stop_loss')
+        tp = trade.get('take_profit')
+        skip_price_check = (sl is None or tp is None)
+        if skip_price_check:
+            logger.warning(f"    Trade missing SL ({sl}) or TP ({tp}), skipping price exit check")
+
         # Check stop loss
-        if trade['direction'] == 'long':
+        if not skip_price_check and trade['direction'] == 'long':
             logger.info(
-                f"    Exit check: direction=long, price={current_price:.2f}, SL={trade['stop_loss']:.2f}, TP={trade['take_profit']:.2f}")
-            if current_price <= trade['stop_loss']:
+                f"    Exit check: direction=long, price={current_price:.2f}, SL={sl:.2f}, TP={tp:.2f}")
+            if current_price <= sl:
                 logger.info(
-                    f"    STOP LOSS HIT! ({current_price:.2f} <= {trade['stop_loss']:.2f})")
+                    f"    STOP LOSS HIT! ({current_price:.2f} <= {sl:.2f})")
                 return (True, 'stop_loss')
-            if current_price >= trade['take_profit']:
+            if current_price >= tp:
                 logger.info(
-                    f"    TAKE PROFIT HIT! ({current_price:.2f} >= {trade['take_profit']:.2f})")
+                    f"    TAKE PROFIT HIT! ({current_price:.2f} >= {tp:.2f})")
                 return (True, 'take_profit')
-        else:  # short
+        elif not skip_price_check:  # short
             logger.info(
-                f"    Exit check: direction=short, price={current_price:.2f}, SL={trade['stop_loss']:.2f}, TP={trade['take_profit']:.2f}")
-            if current_price >= trade['stop_loss']:
+                f"    Exit check: direction=short, price={current_price:.2f}, SL={sl:.2f}, TP={tp:.2f}")
+            if current_price >= sl:
                 logger.info(
-                    f"    STOP LOSS HIT! ({current_price:.2f} >= {trade['stop_loss']:.2f})")
+                    f"    STOP LOSS HIT! ({current_price:.2f} >= {sl:.2f})")
                 return (True, 'stop_loss')
-            if current_price <= trade['take_profit']:
+            if current_price <= tp:
                 logger.info(
-                    f"    TAKE PROFIT HIT! ({current_price:.2f} <= {trade['take_profit']:.2f})")
+                    f"    TAKE PROFIT HIT! ({current_price:.2f} <= {tp:.2f})")
                 return (True, 'take_profit')
 
         logger.info(
             f"    Price between SL and TP, checking counter-trend signals...")
 
-        # Check for counter-trend signals
+        # Check for counter-trend signals (skip if no 15M data available)
+        if df_15m is None or len(df_15m) == 0:
+            logger.info(f"    No 15M data available, skipping counter-trend check")
+            return (False, 'hold')
+
         df_15m_smc = self.smc_detector.analyze_smc(df_15m)
         latest = df_15m_smc.iloc[-1]
 

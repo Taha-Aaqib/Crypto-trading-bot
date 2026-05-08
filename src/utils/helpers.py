@@ -46,6 +46,63 @@ def save_config(config: Dict, config_path: str = 'config/config.yaml'):
         yaml.dump(config, f, default_flow_style=False)
 
 
+def update_config_fields(updates: Dict, config_path: str = 'config/config.yaml'):
+    """
+    Update specific fields in config YAML without expanding env vars.
+    Reads the raw file, modifies only the given keys, writes back.
+    updates: dict like {'trading.market_type': 'futures', 'trading.leverage': 10}
+    """
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+
+    for dotted_key, value in updates.items():
+        keys = dotted_key.split('.')
+        obj = config
+        for k in keys[:-1]:
+            obj = obj.setdefault(k, {})
+        obj[keys[-1]] = value
+
+    # Read original file to preserve env var placeholders
+    with open(config_path, 'r', encoding='utf-8') as f:
+        original_text = f.read()
+
+    # For fields we updated, do targeted text replacements
+    # Fall back to full rewrite if text replacement fails
+    try:
+        import re
+        new_text = original_text
+        for dotted_key, value in updates.items():
+            keys = dotted_key.split('.')
+            yaml_key = keys[-1]
+            # Match the line with the key and replace its value
+            if isinstance(value, str):
+                val_str = f'"{value}"'
+            elif isinstance(value, bool):
+                val_str = 'true' if value else 'false'
+            else:
+                val_str = str(value)
+
+            pattern = rf'(^\s*{re.escape(yaml_key)}\s*:)\s*.*$'
+            # Find and replace only the first match
+            match = re.search(pattern, new_text, re.MULTILINE)
+            if match:
+                # Preserve any inline comment
+                old_line = match.group(0)
+                comment = ''
+                comment_match = re.search(r'\s+#.*$', old_line)
+                if comment_match:
+                    comment = comment_match.group(0)
+                new_line = f"{match.group(1)} {val_str}{comment}"
+                new_text = new_text[:match.start()] + new_line + new_text[match.end():]
+
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.write(new_text)
+    except Exception:
+        # Fallback: full dump (will lose env var placeholders)
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(config, f, default_flow_style=False)
+
+
 def calculate_position_size(
     capital: float,
     risk_per_trade: float,

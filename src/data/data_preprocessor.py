@@ -65,7 +65,7 @@ class DataPreprocessor:
                 if outliers > 0:
                     # Replace outliers with boundary values instead of removing
                     df_no_outliers[col] = df[col].clip(lower=lower_bound, upper=upper_bound)
-                    logger.info(f"Clipped {outliers} outliers in {col}")
+                    logger.debug(f"Clipped {outliers} outliers in {col}")
         
         return df_no_outliers
     
@@ -99,7 +99,7 @@ class DataPreprocessor:
         # Volume changes
         df_features['volume_change'] = df_features['volume'].pct_change()
         
-        logger.info(f"Added {len(df_features.columns) - len(df.columns)} basic features")
+        logger.debug(f"Added {len(df_features.columns) - len(df.columns)} basic features")
         
         return df_features
     
@@ -129,7 +129,7 @@ class DataPreprocessor:
         
         df_resampled = df.resample(target_timeframe).agg(ohlc_dict).dropna()
         
-        logger.info(f"Resampled data to {target_timeframe}: {len(df_resampled)} candles")
+        logger.debug(f"Resampled data to {target_timeframe}: {len(df_resampled)} candles")
         
         return df_resampled
     
@@ -160,14 +160,20 @@ class DataPreprocessor:
                 if method == 'minmax':
                     min_val = df[col].min()
                     max_val = df[col].max()
-                    df_norm[col] = (df[col] - min_val) / (max_val - min_val)
+                    if max_val - min_val == 0:
+                        df_norm[col] = 0.0  # Constant column → set to 0
+                    else:
+                        df_norm[col] = (df[col] - min_val) / (max_val - min_val)
                 
                 elif method == 'zscore':
                     mean_val = df[col].mean()
                     std_val = df[col].std()
-                    df_norm[col] = (df[col] - mean_val) / std_val
+                    if std_val == 0:
+                        df_norm[col] = 0.0  # Constant column → set to 0
+                    else:
+                        df_norm[col] = (df[col] - mean_val) / std_val
         
-        logger.info(f"Normalized {len(columns)} columns using {method}")
+        logger.debug(f"Normalized {len(columns)} columns using {method}")
         
         return df_norm
     
@@ -191,7 +197,7 @@ class DataPreprocessor:
         train_df = df.iloc[:split_index]
         test_df = df.iloc[split_index:]
         
-        logger.info(f"Split data: {len(train_df)} train, {len(test_df)} test")
+        logger.debug(f"Split data: {len(train_df)} train, {len(test_df)} test")
         
         return train_df, test_df
     
@@ -205,7 +211,7 @@ class DataPreprocessor:
         Returns:
             Processed DataFrame ready for analysis
         """
-        logger.info("Starting preprocessing pipeline")
+        logger.debug("Starting preprocessing pipeline")
         
         # Step 1: Clean data
         df_clean = self.clean_data(df)
@@ -213,7 +219,7 @@ class DataPreprocessor:
         # Step 2: Add basic features
         df_features = self.add_basic_features(df_clean)
         
-        logger.info("Preprocessing pipeline completed")
+        logger.debug("Preprocessing pipeline completed")
         
         return df_features
 
