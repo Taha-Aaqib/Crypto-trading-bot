@@ -1,0 +1,39 @@
+# Core Data & Trading
+pandas>=2.0.0
+numpy>=1.24.0
+ccxt>=4.0.0
+
+# Sentiment Analysis
+transformers>=4.30.0       # FinBERT
+torch>=2.0.0               # PyTorch (CPU version is fine)
+feedparser>=6.0.10         # RSS feed parsing
+
+# Technical Analysis
+ta-lib>=0.4.0
+
+# Machine Learning
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# Visualization & old Streamlit dashboard
+matplotlib>=3.7.0
+streamlit>=1.28.0
+plotly>=5.17.0
+
+# Database & Config
+sqlalchemy>=2.0.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Automation
+schedule>=1.2.0
+
+# Utilities
+requests>=2.31.0
+
+# React Dashboard API
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
+# Testing
+pytest>=8.0.0

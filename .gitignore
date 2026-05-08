@@ -1,0 +1,95 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+# Keep folder structure
+!logs/.gitkeep
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+data/trading_bot.db
+
+# API Keys and Secrets — NEVER commit these
+.env
+config/.env
+*.env
+
+# Keep config.yaml but strip secrets — users must add their own API keys
+# config/config.yaml  ← intentionally NOT ignored, but has no real keys
+
+# Large data files — too big for GitHub (use Kaggle to download)
+kaggle/
+data/raw/
+data/processed/
+data/backtest/
+*.csv
+*.parquet
+# Keep folder structure
+!kaggle/.gitkeep
+!data/.gitkeep
+
+# Trained model weights — too large, retrain locally
+models/saved_models/**/*.pt
+models/saved_models/**/*.pkl
+models/saved_models/**/*.h5
+models/saved_models/**/*.pth
+# Keep the folder structure
+!models/saved_models/.gitkeep
+!models/saved_models/BTC_USDT/.gitkeep
+!models/saved_models/ETH_USDT/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Streamlit
+.streamlit/secrets.toml

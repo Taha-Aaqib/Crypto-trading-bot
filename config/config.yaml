@@ -1,0 +1,193 @@
+# AI-Enhanced Smart Money Concept-Based Crypto Trading Bot Configuration
+
+# Exchange API Configuration
+exchange:
+  name: "binance" # binance, okx, etc.
+  api_key: "${BINANCE_API_KEY}" # Loads from .env file
+  api_secret: "${BINANCE_API_SECRET}" # Loads from .env file
+  testnet: false # Use live data (still paper mode - no real money)
+
+# Trading Parameters
+trading:
+  mode: "paper" # paper or live
+  market_type: "futures" # "spot" or "futures"
+  max_price_deviation_pct: 0.005 # 0.5% max allowed gap between signal (15m close) and live ticker
+  leverage: 10 # Leverage multiplier (only used in futures mode)
+  margin_mode: "isolated" # "isolated" or "cross" (only used in futures mode)
+  symbols: ["BTC/USDT", "ETH/USDT"] # Trading pairs
+  base_currency: "USDT"
+  position_size_usd: 100 # Default position size
+  max_open_positions: 3
+
+# Strategy Settings (Confluence-based approach)
+strategy:
+  confluence_threshold: 0.45 # 45% confluence needed for signal (tuned for quality with 10x leverage)
+  # Lower = more trades, higher = fewer but higher quality trades
+
+# Timeframe Configuration (Multi-timeframe SMC analysis)
+timeframes:
+  bias: "1d" # Daily for overall bias (CHOCH, BOS, FVG)
+  structure: "4h" # 4-hour for trend structure
+  entry: "15m" # 15-minute for entry signals
+
+# Smart Money Concept (SMC) Settings
+smc:
+  fvg_threshold: 0.001 # Minimum gap size for FVG detection
+  liquidity_lookback: 20 # Candles to look back for liquidity zones
+  choch_confirmation: true # Require confirmation for CHOCH
+  bos_confirmation: true # Require confirmation for BOS
+
+# Technical Indicators
+indicators:
+  ema_fast: 50 # EMA-50 for trend filter
+  ema_slow: 200 # EMA-200 for trend filter
+  rsi_period: 14
+  atr_period: 14
+  divergence_validity: 14 # RSI divergence valid for N candles after detection
+
+# Risk Management
+risk:
+  max_risk_per_trade: 0.015 # 1.5% of portfolio per trade (reduced from 2% for safety)
+  max_daily_loss: 0.04 # 4% max daily loss (tighter)
+  stop_loss_atr_multiplier: 1.5
+  stop_loss_percent: 0.02 # 2% fallback SL when ATR is invalid
+  take_profit_rr_ratio: 2.0 # Risk-reward ratio
+  use_circuit_breaker: true
+
+  # Trailing Stop: activates after price moves 1:1 R:R in favour
+  trailing_stop:
+    enabled: true
+    activation_rr: 1.0     # Activate trailing after 1:1 R:R profit
+    trail_atr_multiplier: 0.5  # Trail at 0.5 * ATR behind price
+
+  # Partial Take Profit: close 30% at 1:1 R:R, move SL to breakeven, let rest ride
+  partial_tp:
+    enabled: true
+    close_fraction: 0.30   # Close 30% of position at partial TP level
+    rr_trigger: 1.0        # Trigger at 1:1 risk-reward ratio
+
+  # Split Entry: DCA approach to minimize loss
+  # 40% at signal price, 60% limit order closer to SL for better avg entry
+  split_entry:
+    enabled: true
+    immediate_fraction: 0.40   # 40% of position enters immediately at market
+    limit_fraction: 0.60       # 60% enters via limit order near SL
+    limit_distance_from_sl: 0.30  # Place limit order 30% of the way from entry to SL
+    limit_order_expiry_hours: 4   # Cancel unfilled limit order after 4 hours
+
+# Sentiment Analysis (AI-Enhanced) - Free Sources Only
+sentiment:
+  enabled: true
+  use_finbert: true # Use FinBERT for text analysis (75-85% accuracy)
+  min_sentiment_score: 0.3 # -1 to 1 scale
+
+  # Multi-source approach (all FREE)
+  sources:
+    rss:
+      enabled: true
+      weight: 0.45 # 45% - RSS feeds via FinBERT (most reliable source)
+      feeds:
+        - "https://cointelegraph.com/rss"
+        - "https://www.coindesk.com/arc/outboundfeeds/rss/"
+        - "https://decrypt.co/feed"
+        - "https://bitcoinmagazine.com/.rss/full/"
+
+    coingecko:
+      enabled: true
+      weight: 0.35 # 35% - Market metrics (community, dev, momentum)
+      api_url: "https://api.coingecko.com/api/v3"
+
+    fear_greed:
+      enabled: true
+      weight: 0.20 # 20% - Market psychology index
+      api_url: "https://api.alternative.me/fng/"
+# Backtesting Configuration
+backtest:
+  start_date: "2023-01-01"
+  end_date: "2024-12-31"
+  initial_capital: 1000
+  commission: 0.001 # 0.1% trading fee
+  slippage: 0.0005 # 0.05% slippage
+
+# Database Configuration
+database:
+  type: "sqlite" # sqlite or postgresql
+  path: "data/trading_bot.db"
+  # For PostgreSQL:
+  # host: "localhost"
+  # port: 5432
+  # database: "trading_bot"
+  # user: "your_user"
+  # password: "your_password"
+
+# Logging Configuration
+logging:
+  level: "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  console_output: true
+  file_output: true
+  log_dir: "logs/"
+  max_file_size_mb: 10
+  backup_count: 5
+
+# Ensemble Model Configuration (AI-Enhanced)
+ensemble:
+  enabled: true
+  min_confidence: 0.35 # Lowered — ML gatekeeper handles quality filtering now
+  min_signals: 3 # Require 3/4 components to agree (75% confluence)
+
+  # SMART SENTIMENT SYSTEM:
+  # - Sentiment CONFIRMS other signals (boosts confidence when aligned)
+  # - Sentiment WARNS when disagreeing (reduces risky trades)
+  sentiment_confirmation_boost: 0.15 # Boost confidence 15% when sentiment aligns
+
+  weights:
+    smc: 0.30 # Smart Money Concepts - Core strategy
+    ta: 0.30 # Technical Analysis - RSI divergence + trend
+    ml: 0.30 # Machine Learning - LSTM setup quality predictor
+    sentiment: 0.10 # Sentiment - Confirmation only
+
+# Machine Learning Model Configuration
+ml_model:
+  enabled: true
+  model_type: "lstm" # lstm (recommended) or random_forest
+  use_lstm: true # Use LSTM for temporal pattern recognition
+  retrain_interval_days: 30 # Retrain model every 30 days (LSTM is expensive)
+  min_training_samples: 1000 # Minimum samples needed for training
+  lookahead_periods: 5 # Periods ahead to predict
+
+  # LSTM-specific settings
+  sequence_length: 60 # Number of candles to look back
+  lstm_hidden_size: 128 # LSTM hidden layer size
+  lstm_num_layers: 2 # Number of LSTM layers
+  lstm_dropout: 0.2 # Dropout rate for regularization
+  lstm_learning_rate: 0.001 # Adam learning rate
+  lstm_batch_size: 64 # Training batch size
+  lstm_epochs: 100 # Max training epochs
+  lstm_patience: 10 # Early stopping patience
+
+  # Separate models per trading pair
+  models_dir: "models/saved_models"
+  per_symbol_models: true
+
+# Rate Limiting (Prevent Binance IP Ban)
+rate_limiting:
+  enabled: true
+  requests_per_minute: 1000 # Binance max: 1200
+  requests_per_5min: 5000 # Binance max: 6000
+  auto_throttle: true
+
+# Data Caching (Reduce API Calls)
+data_cache:
+  enabled: true
+  cache_dir: "data/cache"
+  ttl_minutes: 5
+  max_cache_size_mb: 100
+
+# Dashboard Configuration
+dashboard:
+  host: "localhost"
+  port: 8501
+  auto_refresh_seconds: 5
+  show_live_trades: true
+  show_sentiment: true
+  show_performance_metrics: true

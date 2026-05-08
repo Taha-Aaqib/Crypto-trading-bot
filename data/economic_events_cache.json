@@ -1,0 +1,212 @@
+[
+  {
+    "name": "FOMC Meeting",
+    "country": "USD",
+    "date": "2026-03-15T14:00:00",
+    "importance": "high",
+    "description": "Federal Reserve interest rate decision"
+  },
+  {
+    "name": "FOMC Meeting",
+    "country": "USD",
+    "date": "2026-05-15T14:00:00",
+    "importance": "high",
+    "description": "Federal Reserve interest rate decision"
+  },
+  {
+    "name": "FOMC Meeting",
+    "country": "USD",
+    "date": "2026-06-15T14:00:00",
+    "importance": "high",
+    "description": "Federal Reserve interest rate decision"
+  },
+  {
+    "name": "FOMC Meeting",
+    "country": "USD",
+    "date": "2026-07-15T14:00:00",
+    "importance": "high",
+    "description": "Federal Reserve interest rate decision"
+  },
+  {
+    "name": "FOMC Meeting",
+    "country": "USD",
+    "date": "2026-09-15T14:00:00",
+    "importance": "high",
+    "description": "Federal Reserve interest rate decision"
+  },
+  {
+    "name": "FOMC Meeting",
+    "country": "USD",
+    "date": "2026-11-15T14:00:00",
+    "importance": "high",
+    "description": "Federal Reserve interest rate decision"
+  },
+  {
+    "name": "FOMC Meeting",
+    "country": "USD",
+    "date": "2026-12-15T14:00:00",
+    "importance": "high",
+    "description": "Federal Reserve interest rate decision"
+  },
+  {
+    "name": "CPI",
+    "country": "USD",
+    "date": "2026-03-13T08:30:00",
+    "importance": "high",
+    "description": "Consumer Price Index (inflation data)"
+  },
+  {
+    "name": "CPI",
+    "country": "USD",
+    "date": "2026-04-13T08:30:00",
+    "importance": "high",
+    "description": "Consumer Price Index (inflation data)"
+  },
+  {
+    "name": "CPI",
+    "country": "USD",
+    "date": "2026-05-13T08:30:00",
+    "importance": "high",
+    "description": "Consumer Price Index (inflation data)"
+  },
+  {
+    "name": "CPI",
+    "country": "USD",
+    "date": "2026-06-13T08:30:00",
+    "importance": "high",
+    "description": "Consumer Price Index (inflation data)"
+  },
+  {
+    "name": "CPI",
+    "country": "USD",
+    "date": "2026-07-13T08:30:00",
+    "importance": "high",
+    "description": "Consumer Price Index (inflation data)"
+  },
+  {
+    "name": "CPI",
+    "country": "USD",
+    "date": "2026-08-13T08:30:00",
+    "importance": "high",
+    "description": "Consumer Price Index (inflation data)"
+  },
+  {
+    "name": "CPI",
+    "country": "USD",
+    "date": "2026-09-13T08:30:00",
+    "importance": "high",
+    "description": "Consumer Price Index (inflation data)"
+  },
+  {
+    "name": "CPI",
+    "country": "USD",
+    "date": "2026-10-13T08:30:00",
+    "importance": "high",
+    "description": "Consumer Price Index (inflation data)"
+  },
+  {
+    "name": "CPI",
+    "country": "USD",
+    "date": "2026-11-13T08:30:00",
+    "importance": "high",
+    "description": "Consumer Price Index (inflation data)"
+  },
+  {
+    "name": "CPI",
+    "country": "USD",
+    "date": "2026-12-13T08:30:00",
+    "importance": "high",
+    "description": "Consumer Price Index (inflation data)"
+  },
+  {
+    "name": "NFP",
+    "country": "USD",
+    "date": "2026-03-06T08:30:00",
+    "importance": "high",
+    "description": "Non-Farm Payrolls (employment data)"
+  },
+  {
+    "name": "NFP",
+    "country": "USD",
+    "date": "2026-04-03T08:30:00",
+    "importance": "high",
+    "description": "Non-Farm Payrolls (employment data)"
+  },
+  {
+    "name": "NFP",
+    "country": "USD",
+    "date": "2026-05-01T08:30:00",
+    "importance": "high",
+    "description": "Non-Farm Payrolls (employment data)"
+  },
+  {
+    "name": "NFP",
+    "country": "USD",
+    "date": "2026-06-05T08:30:00",
+    "importance": "high",
+    "description": "Non-Farm Payrolls (employment data)"
+  },
+  {
+    "name": "NFP",
+    "country": "USD",
+    "date": "2026-07-03T08:30:00",
+    "importance": "high",
+    "description": "Non-Farm Payrolls (employment data)"
+  },
+  {
+    "name": "NFP",
+    "country": "USD",
+    "date": "2026-08-07T08:30:00",
+    "importance": "high",
+    "description": "Non-Farm Payrolls (employment data)"
+  },
+  {
+    "name": "NFP",
+    "country": "USD",
+    "date": "2026-09-04T08:30:00",
+    "importance": "high",
+    "description": "Non-Farm Payrolls (employment data)"
+  },
+  {
+    "name": "NFP",
+    "country": "USD",
+    "date": "2026-10-02T08:30:00",
+    "importance": "high",
+    "description": "Non-Farm Payrolls (employment data)"
+  },
+  {
+    "name": "NFP",
+    "country": "USD",
+    "date": "2026-11-06T08:30:00",
+    "importance": "high",
+    "description": "Non-Farm Payrolls (employment data)"
+  },
+  {
+    "name": "NFP",
+    "country": "USD",
+    "date": "2026-12-04T08:30:00",
+    "importance": "high",
+    "description": "Non-Farm Payrolls (employment data)"
+  },
+  {
+    "name": "GDP",
+    "country": "USD",
+    "date": "2026-04-28T08:30:00",
+    "importance": "high",
+    "description": "Gross Domestic Product"
+  },
+  {
+    "name": "GDP",
+    "country": "USD",
+    "date": "2026-07-28T08:30:00",
+    "importance": "high",
+    "description": "Gross Domestic Product"
+  },
+  {
+    "name": "GDP",
+    "country": "USD",
+    "date": "2026-10-28T08:30:00",
+    "importance": "high",
+    "description": "Gross Domestic Product"
+  }
+]
