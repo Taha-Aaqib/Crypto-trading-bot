@@ -162,18 +162,23 @@ class RiskManager:
 
     def is_circuit_breaker_triggered(self) -> bool:
         """
-        Circuit breaker: Pause trading after consecutive losses
+        Circuit breaker: Pause trading after 5 consecutive losses for a 12-hour period.
 
         Returns:
-            True if circuit breaker triggered, False otherwise
+            True if circuit breaker is active, False otherwise
         """
         trades_df = self.db_manager.get_trade_history(limit=20)
 
         if trades_df.empty:
             return False
 
-        # Only consider CLOSED trades (open trades have NaN pnl and would bypass the check)
-        closed_trades = trades_df[trades_df['pnl'].notna()]
+        # Ensure exit_time is in datetime format
+        if not pd.api.types.is_datetime64_any_dtype(trades_df['exit_time']):
+            trades_df['exit_time'] = pd.to_datetime(
+                trades_df['exit_time'], errors='coerce')
+
+        # Only consider CLOSED trades with valid exit times
+        closed_trades = trades_df[trades_df['pnl'].notna() & trades_df['exit_time'].notna()].copy()
 
         if len(closed_trades) < 5:
             return False
@@ -181,12 +186,27 @@ class RiskManager:
         # Check last 5 closed trades
         last_5_trades = closed_trades.head(5)
 
-        # If all last 5 closed trades are losses, trigger circuit breaker
-        all_losses = all(last_5_trades['pnl'] < 0)
-
-        if all_losses:
-            logger.error("🔴 CIRCUIT BREAKER: 5 consecutive losses detected!")
-            return True
+        # If all last 5 closed trades are losses, check the cooldown period
+        if all(last_5_trades['pnl'] < 0):
+            # Get the timestamp of the 5th consecutive loss (most recent one)
+            last_loss_time = last_5_trades['exit_time'].iloc[0]
+            
+            # Define the cooldown period (12 hours)
+            cooldown_period = timedelta(hours=12)
+            
+            # Check if we are still within the cooldown period
+            if datetime.now() < last_loss_time + cooldown_period:
+                time_remaining = (last_loss_time + cooldown_period) - datetime.now()
+                hours, remainder = divmod(time_remaining.total_seconds(), 3600)
+                minutes, _ = divmod(remainder, 60)
+                
+                logger.error(
+                    f"🔴 CIRCUIT BREAKER: 5 consecutive losses. "
+                    f"Trading paused for another {int(hours)}h {int(minutes)}m."
+                )
+                return True
+            else:
+                logger.info("Circuit breaker cooldown period has ended. Resuming trading.")
 
         return False
 
